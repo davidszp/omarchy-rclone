@@ -1,0 +1,62 @@
+[
+  {
+    "state": "fx_islocal",
+    "name": "config_is_local",
+    "help": "TEST DATA — nothing is contacted and no remote is created. Modelled on the browser-auth question every OAuth backend asks first.",
+    "default": "true",
+    "required": false,
+    "hidden": false,
+    "secret": false,
+    "examples": [
+      { "value": "true", "help": "Example: yes" },
+      { "value": "false", "help": "Example: no" }
+    ]
+  },
+  {
+    "state": "fx_choose_type",
+    "name": "config_type",
+    "help": "TEST DATA — this step comes AFTER authenticating, which is the whole reason the flow needs a loop rather than a one-shot create. Shaped after OneDrive's post-auth picker, the case that first broke.",
+    "default": "onedrive",
+    "required": true,
+    "hidden": false,
+    "secret": false,
+    "examples": [
+      { "value": "onedrive", "help": "Example: personal or business" },
+      { "value": "sharepoint", "help": "Example: root site" },
+      { "value": "driveid", "help": "Example: type an ID in" }
+    ]
+  },
+  {
+    "state": "fx_org",
+    "name": "config_team_drive_id",
+    "help": "Team Drive ID",
+    "default": "org-1",
+    "required": true,
+    "hidden": false,
+    "secret": false,
+    "examples": [
+      { "value": "org-1", "help": "Example: first org" },
+      { "value": "org-2", "help": "Example: second org" }
+    ]
+  },
+  {
+    "state": "fx_driveid",
+    "name": "config_driveid",
+    "help": "TEST DATA — a free-text step, so the form is exercised as well as the buttons.",
+    "default": "",
+    "required": true,
+    "hidden": false,
+    "secret": false,
+    "examples": []
+  },
+  {
+    "state": "fx_secret",
+    "name": "config_token_secret",
+    "help": "TEST DATA — a secret step, so the masked field is exercised too.",
+    "default": "",
+    "required": true,
+    "hidden": false,
+    "secret": true,
+    "examples": []
+  }
+]

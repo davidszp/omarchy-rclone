@@ -1,0 +1,537 @@
+#!/usr/bin/env bash
+# Everything this plugin asks of the rclone rc daemon.
+#
+#   rclone-rc mount   "gdrive,skip_gdocs=true:"  /home/you/GDrive
+#   rclone-rc unmount ""                         /home/you/GDrive [force]
+#   rclone-rc pin     "gdrive,skip_gdocs=true:"  /home/you/GDrive
+#   rclone-rc unpin   ""                         /home/you/GDrive
+#   rclone-rc copy    "gdrive:docs"  /home/you/docs   [dry]
+#   rclone-rc mirror  "gdrive:docs"  /home/you/docs   [dry]
+#   rclone-rc bisync  "gdrive:docs"  /home/you/docs   [dry|resync|resync,dry]
+#   rclone-rc remount "gdrive,skip_gdocs=true:" /home/you/New /home/you/Old [force]
+#   rclone-rc bwlimit off | 5M
+#   rclone-rc stop    <jobid>
+#   rclone-rc forget-config                      drop the daemon's cached remotes
+#   rclone-rc clear-recents                      empty the RECENT list
+#   rclone-rc stop-all                           stop every transfer we started
+#   rclone-rc unmount-all [force]                unmount everything, and suppress it
+#   rclone-rc remove-remote "gdrive" [force]     unmount, unpin, then delete the config
+#
+# Going through the daemon (rather than spawning `rclone mount`/`rclone sync`)
+# is what makes the work visible to mount/listmounts, job/list and core/stats,
+# and therefore to the bar widget. A separately spawned rclone is invisible.
+#
+# MOUNTING never pre-downloads: listings are metadata only and content is
+# fetched on open. COPY and MIRROR do transfer data — that is their job.
+#
+# copy   = additive. Never deletes anything at the destination.
+# mirror = sync/sync. DELETES destination files that are not in the source.
+#          Kept as a separate verb so no caller can reach it by accident.
+# bisync = two-way. Propagates changes in BOTH directions, so a delete on either
+#          side removes the file from the other. Refuses to run on a pair it has
+#          no prior listings for — measured: "bisync aborted" — until seeded with
+#          `resync`, which merges both sides (measured: a union, Path1 winning
+#          conflicts) and writes the baseline listings under ~/.cache/rclone/bisync.
+set -euo pipefail
+
+ACTION="${1:-}"
+FS="${2:-}"
+MOUNTPOINT="${3:-}"
+EXTRA="${4:-}"
+# remount consumes EXTRA as the OLD path, so its force flag needs its own slot.
+FORCE="${5:-}"
+
+ENV_FILE="$HOME/.config/rclone/rcd.env"
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE — run the plugin's daemon setup first" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+
+usage() {
+  echo "usage: rclone-rc <mount|unmount|pin|unpin|copy|mirror|bisync|remount|repin|suppress|unsuppress|bwlimit|stop|forget-config|clear-recents|stop-all|unmount-all|remove-remote> <fs|jobid|rate> [dest] [dry|resync]" >&2
+  exit 1
+}
+
+# `stop` takes only a jobid, so a blanket "third argument required" check
+# rejected every valid stop call. Argument requirements are per-action.
+case "$ACTION" in
+  stop|bwlimit) [ -n "$FS" ] || usage ;;
+  # Daemon-wide, so it names nothing. It must be listed explicitly: the catch-all
+  # below demands a mountpoint, which silently rejected it as a usage error —
+  # and the caller is a QML runner whose stderr nobody reads, so the feature
+  # simply never fired.
+  forget-config|clear-recents|stop-all|unmount-all) : ;;
+  remove-remote) [ -n "$FS" ] || usage ;;
+  "")   usage ;;
+  *)    [ -n "$MOUNTPOINT" ] || usage ;;
+esac
+
+rc() {
+  rclone rc --url "http://${RCLONE_RC_ADDR}/" \
+    --user "$RCLONE_RC_USER" --pass "$RCLONE_RC_PASS" "$@"
+}
+
+# The daemon may still be starting when the shell reconciles mounts at login,
+# so wait briefly rather than failing the first attempt. Only the mount paths
+# need it — pin/unpin just edit a file and must not block on a daemon.
+wait_for_daemon() {
+  for _ in $(seq 1 20); do
+    if rc rc/noop >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  echo "rclone rcd did not become reachable" >&2
+  return 1
+}
+
+# How many writes have NOT yet reached the provider for this mount point?
+#
+# With --vfs-cache-mode full a write lands in the local cache first. The forced
+# `fusermount3 -u` below bypasses rclone entirely, so anything still queued is
+# simply lost. Checking first is the difference between "unmount failed" and
+# "your file is gone".
+pending_for() { # pending_for <mountpoint> -> count on stdout
+  python3 "$(dirname "$0")/status.py" --pending "$1" 2>/dev/null || echo 0
+}
+
+# Unmount and CONFIRM it happened.
+#
+# `mount/unmount` returns {} (success) even when the mount survives — observed
+# while moving a mount: the rc call reported success, the mountpoint was still
+# live, and the follow-up mount produced two mounts of the same remote. Trusting
+# the return value is how you get a duplicate. So: ask rclone, verify, then fall
+# back to fusermount3, and only then give up.
+unmount_verified() {
+  local target="$1"
+  local force="${2:-}"
+
+  # Refuse rather than risk it, unless the caller explicitly forces.
+  if [ "$force" != "force" ]; then
+    local waiting
+    waiting="$(pending_for "$target")"
+    if [ "${waiting:-0}" -gt 0 ] 2>/dev/null; then
+      echo "$waiting file(s) not yet uploaded from $target — wait, or force" >&2
+      return 2
+    fi
+  fi
+
+  rc mount/unmount mountPoint="$target" >/dev/null 2>&1 || true
+  sleep 0.3
+  if ! mountpoint -q "$target" 2>/dev/null; then return 0; fi
+  fusermount3 -u "$target" 2>/dev/null || fusermount -u "$target" 2>/dev/null || true
+  sleep 0.3
+  if ! mountpoint -q "$target" 2>/dev/null; then return 0; fi
+  echo "could not unmount $target — something is still using it" >&2
+  return 1
+}
+
+# Mount points switched off by hand. On DISK, not in the panel: the widget is
+# instantiated once per monitor and each instance has its own Service, so
+# in-memory state diverges — the instance you clicked suppressed the mount while
+# the other one cheerfully reconciled it back within seconds.
+#
+# A function rather than only a verb, because `unmount-all` must suppress every
+# mount it takes down. Without that, reconcile sees the pins, finds nothing
+# mounted, and restores the lot a couple of seconds later — the bulk action
+# would appear to do nothing at all.
+suppress_edit() { # suppress_edit <suppress|unsuppress> <mountpoint>
+  MODE="$1" MP="$2" SUPPRESS_FILE="$HOME/.config/rclone/omarchy-suppressed.json" python3 - <<'PY2'
+import json, os, tempfile
+path = os.environ["SUPPRESS_FILE"]
+mode, mp = os.environ["MODE"], os.environ["MP"]
+try:
+    with open(path) as fh:
+        rows = json.load(fh)
+    if not isinstance(rows, list):
+        rows = []
+except (OSError, json.JSONDecodeError):
+    rows = []
+rows = [r for r in rows if r != mp]
+if mode == "suppress":
+    rows.append(mp)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path), delete=False, encoding="utf-8")
+json.dump(rows, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
+print("%s %s (%d suppressed)" % (mode, mp, len(rows)))
+PY2
+}
+
+AUTO_FILE="$HOME/.config/rclone/omarchy-automounts.json"
+
+# mountPoint -> the fs we ASKED for. mount/listmounts reports a rewritten,
+# display-only form ("gdrive{YRXYK}:") which rclone then REFUSES as input:
+#   "config name contains invalid characters"
+# Pinning that value produced a login mount that could never be restored, and
+# it failed silently. So record what we actually requested.
+MOUNTFS_FILE="$HOME/.config/rclone/omarchy-mountfs.json"
+
+remember_fs() { # remember_fs <mountpoint> <fs>
+  MP="$1" FS="$2" MOUNTFS_FILE="$MOUNTFS_FILE" python3 - <<'PY2'
+import json, os, tempfile
+path = os.environ["MOUNTFS_FILE"]
+mp, fs = os.environ["MP"], os.environ["FS"]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        data = {}
+except (OSError, json.JSONDecodeError):
+    data = {}
+data[mp] = fs
+tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path), delete=False, encoding="utf-8")
+json.dump(data, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
+PY2
+}
+
+forget_fs() { # forget_fs <mountpoint>
+  MP="$1" MOUNTFS_FILE="$MOUNTFS_FILE" python3 - <<'PY2'
+import json, os, tempfile
+path = os.environ["MOUNTFS_FILE"]
+mp = os.environ["MP"]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        data = {}
+except (OSError, json.JSONDecodeError):
+    data = {}
+data.pop(mp, None)
+try:
+    tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path), delete=False, encoding="utf-8")
+    json.dump(data, tmp, indent=2)
+    tmp.close()
+    os.replace(tmp.name, path)
+except OSError:
+    pass
+PY2
+}
+
+# pin/unpin edit the login-mount list. Written with python rather than jq so the
+# plugin has no extra dependency, and atomically so a crash mid-write cannot
+# leave a truncated file that would silently drop every login mount.
+pin_edit() {
+  local mode="$1" fs="$2" mountpoint="$3"
+  mkdir -p "$(dirname "$AUTO_FILE")"
+  MODE="$mode" FS="$fs" MP="$mountpoint" AUTO_FILE="$AUTO_FILE" python3 - <<'PY'
+import json, os, tempfile
+path = os.environ["AUTO_FILE"]
+mode, fs, mp = os.environ["MODE"], os.environ["FS"], os.environ["MP"]
+try:
+    with open(path) as fh:
+        rows = json.load(fh)
+    if not isinstance(rows, list):
+        rows = []
+except (OSError, json.JSONDecodeError):
+    rows = []
+rows = [r for r in rows
+        if isinstance(r, dict) and r.get("mountPoint") not in (mp,)]
+if mode == "pin":
+    rows.append({"fs": fs, "mountPoint": mp})
+tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path),
+                                  delete=False, encoding="utf-8")
+json.dump(rows, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
+print("%s %s (%d login mounts)" % (mode, mp, len(rows)))
+PY
+}
+
+case "$ACTION" in
+  pin|unpin)
+    pin_edit "$ACTION" "$FS" "$MOUNTPOINT"
+    exit 0
+    ;;
+  suppress|unsuppress)
+    suppress_edit "$ACTION" "$MOUNTPOINT"
+    exit 0
+    ;;
+  repin)
+    # Drop the old path and add the new one in a single rewrite.
+    OLD="${EXTRA:-}"
+    [ -n "$OLD" ] || { echo "repin needs the old path" >&2; exit 1; }
+    MODE=repin FS="$FS" MP="$MOUNTPOINT" OLDMP="$OLD" AUTO_FILE="$AUTO_FILE" python3 - <<'PY2'
+import json, os, tempfile
+path = os.environ["AUTO_FILE"]
+fs, mp, old = os.environ["FS"], os.environ["MP"], os.environ["OLDMP"]
+try:
+    with open(path) as fh:
+        rows = json.load(fh)
+    if not isinstance(rows, list):
+        rows = []
+except (OSError, json.JSONDecodeError):
+    rows = []
+rows = [r for r in rows
+        if isinstance(r, dict) and r.get("mountPoint") not in (mp, old)]
+rows.append({"fs": fs, "mountPoint": mp})
+tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path),
+                                  delete=False, encoding="utf-8")
+json.dump(rows, tmp, indent=2)
+tmp.close()
+os.replace(tmp.name, path)
+print("repin %s -> %s (%d login mounts)" % (old, mp, len(rows)))
+PY2
+    exit 0
+    ;;
+  remount)
+    # Move a live mount to a new folder. rclone cannot relocate a mount in
+    # place, so this is unmount + mount — done in one call so the panel does not
+    # have to sequence two async runners and half-fail between them.
+    #
+    # Anything holding a file open under the old path will see it disappear,
+    # exactly as a manual unmount would.
+    OLD="${EXTRA:-}"
+    [ -n "$FS" ] && [ -n "$OLD" ] || { echo "remount needs fs, new path and old path" >&2; exit 1; }
+    wait_for_daemon
+    # Abort rather than mount a second copy if the old one will not let go —
+    # and abort rather than drop pending uploads when moving a busy mount.
+    unmount_verified "$OLD" "$FORCE" || exit 1
+    mkdir -p "$MOUNTPOINT"
+    rc mount/mount fs="$FS" mountPoint="$MOUNTPOINT" vfsOpt='{
+      "CacheMode": "full",
+      "CacheMaxSize": 5368709120,
+      "CacheMaxAge": 86400000000000,
+      "DirCacheTime": 300000000000,
+      "PollInterval": 15000000000
+    }'
+    # Forget FIRST: a remount to the same path shares a key, and forgetting
+    # afterwards deleted the entry that had just been recorded.
+    forget_fs "$OLD"
+    remember_fs "$MOUNTPOINT" "$FS"
+    # Leave no empty stub behind. rmdir refuses a non-empty directory, so this
+    # cannot delete anything the user still has in there.
+    rmdir "$OLD" 2>/dev/null || true
+    ;;
+  bisync)
+    [ -n "$FS" ] || { echo "bisync needs path1" >&2; exit 1; }
+    wait_for_daemon
+    args=(path1="$FS" path2="$MOUNTPOINT" _async=true "_group=bisync $FS -> $MOUNTPOINT")
+    # First run for a pair MUST be seeded, or rclone aborts. Seeding is not a
+    # no-op: it merges both sides and establishes the baseline listings.
+    case "$EXTRA" in *resync*) args+=(resync=true) ;; esac
+    case "$EXTRA" in *dry*) args+=(dryRun=true) ;; esac
+    rc sync/bisync "${args[@]}"
+    ;;
+  copy|mirror)
+    [ -n "$FS" ] || { echo "$ACTION needs a source" >&2; exit 1; }
+    wait_for_daemon
+    # _async so the call returns a jobid immediately instead of blocking the
+    # shell for the length of the transfer. _group labels the job so the panel
+    # can read ITS stats via core/stats?group=… rather than the daemon-wide
+    # counters, which are cumulative for the whole rcd lifetime.
+    method="sync/copy"
+    [ "$ACTION" = "mirror" ] && method="sync/sync"
+    args=(srcFs="$FS" dstFs="$MOUNTPOINT" _async=true "_group=$ACTION $FS -> $MOUNTPOINT")
+    # A dry run reports what would happen and moves nothing. The only safe way
+    # to preview a mirror before it deletes anything.
+    [ "$EXTRA" = "dry" ] && args+=(_config='{"DryRun":true}')
+    rc "$method" "${args[@]}"
+    ;;
+  bwlimit)
+    # "off" or an rclone rate like 5M. Applies to the whole daemon, not one job.
+    [ -n "$FS" ] || { echo "bwlimit needs a rate (or 'off')" >&2; exit 1; }
+    wait_for_daemon
+    rc core/bwlimit rate="$FS"
+    ;;
+  remove-remote)
+    # Delete a remote and everything this plugin remembers about it, in the one
+    # order that works: unmount, unpin, forget, THEN delete the config.
+    #
+    # Sequenced here rather than as three QML calls because each of those is a
+    # separate CommandRunner with no ordering between them — deleting the config
+    # while a mount is still live leaves a FUSE mount whose backend no longer
+    # exists, which reports I/O errors on every access and cannot be unmounted
+    # by name any more.
+    #
+    # FS is the remote name; EXTRA carries the force flag.
+    [ -n "$FS" ] || { echo "remove-remote needs a remote name" >&2; exit 1; }
+    wait_for_daemon
+    # A mount's fs is rarely the plain name: mounting "gdrive,skip_gdocs=true:"
+    # comes back as "gdrive{YRXYK}:". Accept the name followed by : , or { and
+    # nothing else, so "gdrive" does not match "gdrivebackup:".
+    while IFS=$'\t' read -r mfs mp; do
+      [ -n "$mp" ] || continue
+      case "$mfs" in
+        "$FS:"*|"$FS,"*|"$FS{"*)
+          if ! unmount_verified "$mp" "$EXTRA"; then
+            echo "still mounted at $mp — nothing was removed" >&2
+            exit 1
+          fi
+          pin_edit unpin "" "$mp" >/dev/null 2>&1 || true
+          forget_fs "$mp" || true
+          suppress_edit unsuppress "$mp" >/dev/null 2>&1 || true
+          ;;
+      esac
+    done < <(rc mount/listmounts 2>/dev/null | python3 -c 'import json,sys
+try:
+    for m in (json.load(sys.stdin).get("mountPoints") or []):
+        print("%s\t%s" % (m.get("Fs",""), m.get("MountPoint","")))
+except Exception: pass' || true)
+
+    # A pin can outlive its mount, so clear any that name this remote even when
+    # nothing was mounted — otherwise reconcile would try to restore a remote
+    # that no longer exists, three times, and then give up silently.
+    NAME="$FS" AUTO_FILE="$AUTO_FILE" python3 - <<'PY' || true
+import json, os, tempfile
+path, name = os.environ["AUTO_FILE"], os.environ["NAME"]
+try:
+    with open(path) as fh:
+        rows = json.load(fh)
+    if not isinstance(rows, list):
+        rows = []
+except (OSError, json.JSONDecodeError):
+    rows = []
+def owns(fs):
+    return fs.startswith(name + ":") or fs.startswith(name + ",") or fs.startswith(name + "{")
+kept = [r for r in rows if not owns(str(r.get("fs", "")))]
+if len(kept) != len(rows):
+    tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path), delete=False, encoding="utf-8")
+    json.dump(kept, tmp, indent=2)
+    tmp.close()
+    os.replace(tmp.name, path)
+PY
+
+    rclone config delete "$FS"
+    echo "{\"ok\":true,\"removed\":\"$FS\"}"
+    ;;
+  stop-all)
+    # Stops every transfer WE started. Filtered by group prefix for the same
+    # reason job_rows filters: rc calls are themselves jobs, so an unfiltered
+    # sweep would cancel the very call doing the sweeping.
+    #
+    # Not a "pause": rclone has no resume for a stopped job. Re-running picks up
+    # where it left off only because copy skips files already at the
+    # destination — which is why the UI must not promise a pause.
+    wait_for_daemon
+    stopped=0
+    for job_id in $(rc job/list 2>/dev/null \
+      | python3 -c 'import json,sys
+try: print(" ".join(str(i) for i in (json.load(sys.stdin).get("jobids") or [])))
+except Exception: pass' || true); do
+      group="$(rc job/status jobid="$job_id" 2>/dev/null \
+        | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("group") or "")
+except Exception: print("")' || true)"
+      case "$group" in
+        copy\ *|mirror\ *|bisync\ *)
+          rc job/stop jobid="$job_id" >/dev/null 2>&1 && stopped=$((stopped + 1)) ;;
+      esac
+    done
+    echo "{\"ok\":true,\"stopped\":$stopped}"
+    ;;
+  unmount-all)
+    # FS carries the force flag here — this verb names no single mount.
+    wait_for_daemon
+    done_count=0
+    failed=0
+    # Process substitution, not a pipe: a pipe puts the loop in a subshell and
+    # the counters would come back zero. `read -r` rather than word splitting,
+    # because a mount point may contain spaces.
+    while IFS= read -r mp; do
+      [ -n "$mp" ] || continue
+      if unmount_verified "$mp" "$FS"; then
+        # Suppress BEFORE counting: an unmount that reconcile immediately undoes
+        # is not an unmount.
+        suppress_edit suppress "$mp" >/dev/null
+        done_count=$((done_count + 1))
+      else
+        failed=$((failed + 1))
+      fi
+    done < <(rc mount/listmounts 2>/dev/null | python3 -c 'import json,sys
+try:
+    for m in (json.load(sys.stdin).get("mountPoints") or []): print(m.get("MountPoint",""))
+except Exception: pass')
+    if [ "$failed" -gt 0 ]; then
+      echo "unmounted $done_count, $failed still busy" >&2
+      exit 1
+    fi
+    echo "{\"ok\":true,\"unmounted\":$done_count}"
+    ;;
+  clear-recents)
+    # Empties the RECENT list. Resets PER GROUP, skipping any group a job is
+    # still running in — a bare `core/stats-reset` resets every group at once,
+    # which zeroes a live job's byte counters while the transfer carries on, so
+    # its progress bar restarts from zero mid-copy and reads as a fault.
+    #
+    # Measured: resetting one group dropped exactly that group's rows from
+    # core/transferred (51 -> 48) and left every other group alone.
+    wait_for_daemon
+    busy=""
+    for job_id in $(rc job/list 2>/dev/null \
+      | python3 -c 'import json,sys
+try: print(" ".join(str(i) for i in (json.load(sys.stdin).get("jobids") or [])))
+except Exception: pass' || true); do
+      group="$(rc job/status jobid="$job_id" 2>/dev/null \
+        | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("group") or "")
+except Exception: print("")' || true)"
+      [ -n "$group" ] && busy="${busy}${group}
+"
+    done
+    rc core/group-list 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    for g in (json.load(sys.stdin).get("groups") or []): print(g)
+except Exception: pass' \
+      | while IFS= read -r group; do
+          [ -n "$group" ] || continue
+          # Exact whole-line match, so a group whose name is a substring of a
+          # running one is not skipped by accident.
+          printf '%s' "$busy" | grep -qxF -- "$group" && continue
+          rc core/stats-reset group="$group" >/dev/null 2>&1
+        done
+    echo '{"ok":true}'
+    ;;
+  forget-config)
+    # The daemon caches a CONSTRUCTED filesystem per remote, so a remote that is
+    # created or repaired while rcd is running keeps answering from the config
+    # it had at first use. Measured on zoho: the flow completed and the CLI
+    # listed files, while the daemon still returned the pre-setup error, so the
+    # panel showed a working remote as "unreachable" indefinitely — nothing
+    # short of restarting rcd cleared it.
+    #
+    # Cheap to drop: entries are rebuilt lazily on next use. Mounts are NOT
+    # affected — they hold their own fs, verified by clearing with four mounts
+    # live and finding all four still serving.
+    wait_for_daemon
+    rc fscache/clear
+    ;;
+  stop)
+    [ -n "$FS" ] || { echo "stop needs a jobid" >&2; exit 1; }
+    wait_for_daemon
+    rc job/stop jobid="$FS"
+    ;;
+  unmount)
+    wait_for_daemon
+    unmount_verified "$MOUNTPOINT" "$EXTRA"
+    ;;
+  mount)
+    [ -n "$FS" ] || { echo "mount needs an fs" >&2; exit 1; }
+    wait_for_daemon
+    mkdir -p "$MOUNTPOINT"
+    # Durations are NANOSECONDS and sizes BYTES in the rc API — confirmed via
+    # `rclone rc options/get`, which reports CacheMaxAge=3600000000000 for the
+    # 1h default. Do not pass "5G" or "24h" strings here.
+    #
+    # DirCacheTime is rclone's default 5 minutes, NOT the hour this used to
+    # carry. PollInterval only helps on backends that implement change
+    # notification: measured 2026-08-16, a file created directly on the remote
+    # appeared in the mount after 3.0s on Google Drive and had still not
+    # appeared after 40s on Zoho, which has no ChangeNotify. On those backends
+    # DirCacheTime is the ONLY bound on how stale a listing gets, and an hour is
+    # long enough to look broken. The cost is a re-listing when you browse a
+    # directory whose cache expired — on access, not a background poll.
+    rc mount/mount fs="$FS" mountPoint="$MOUNTPOINT" vfsOpt='{
+      "CacheMode": "full",
+      "CacheMaxSize": 5368709120,
+      "CacheMaxAge": 86400000000000,
+      "DirCacheTime": 300000000000,
+      "PollInterval": 15000000000
+    }'
+    remember_fs "$MOUNTPOINT" "$FS"
+    ;;
+  *)
+    usage
+    ;;
+esac

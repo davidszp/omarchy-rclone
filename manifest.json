@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "id": "davidszp.rclone",
+  "name": "rclone",
+  "version": "0.1.0",
+  "author": "david",
+  "license": "MIT",
+  "description": "rclone activity, remote status, and setup shortcuts in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "rclone",
+    "description": "Live transfer activity, configured remotes, mounts, and a shortcut into rclone config.",
+    "category": "Files",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "activeIntervalSec": 2
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Idle refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "activeIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while transferring (seconds)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 2
+      }
+    ]
+  }
+}

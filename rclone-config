@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Drives rclone's interactive config STATE MACHINE one step at a time, and
+# normalises each step into a small JSON object the panel can render.
+#
+#   rclone-config start  <name> <type> [k=v...]  first question (new remotes only)
+#   rclone-config resume <name>                  reconfigure an EXISTING remote
+#   rclone-config next  <name> <state> <result>  answer, get the next question
+#   rclone-config abort <name>                   delete a half-configured remote
+#
+# Why a state machine at all: plain backend options (S3 keys, SFTP host…) are
+# NOT asked this way — measured, every non-OAuth backend returns done on the
+# first call, because its options are ordinary key=value settings. The machine
+# exists for OAuth flows and the pickers that follow them: OneDrive's state is
+# `*oauth-islocal,choose_type,,`, meaning after you authenticate it still has to
+# ask which drive. That post-auth question, not the browser handshake, is what a
+# one-shot `config create` cannot answer.
+#
+# Verified against Google Drive without authenticating anything:
+#   client_id_warning -> client_id_set -> client_secret_set
+#
+# SECRETS: `--result` is an argument, so a value passed here appears in rclone's
+# own argv for the duration of that call. rclone has no stdin input for config
+# values (`--json` is argv too). Callers should treat any password-ish step as
+# briefly exposed to other processes of the same user.
+set -euo pipefail
+
+ACTION="${1:-}"
+NAME="${2:-}"
+
+usage() {
+  echo "usage: rclone-config <start|next|abort> <name> [type|state] [result]" >&2
+  exit 1
+}
+[ -n "$ACTION" ] && [ -n "$NAME" ] || usage
+
+# Turn rclone's verbose step into the few fields the panel actually renders.
+# `Option` is null when the flow is finished, which is how `done` is decided.
+normalise() {
+  python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except Exception:
+    # rclone writes hard refusals to stderr as plain text, not JSON — e.g.
+    # "Error: no region set" for zoho. Reporting "could not parse" hid the one
+    # sentence that says what is actually wrong.
+    first = ""
+    for line in raw.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("Usage:", "Flags:", "-", "  ")):
+            first = line
+            break
+    print(json.dumps({"ok": False, "done": True,
+                      "error": first or "rclone could not start this setup"}))
+    sys.exit(0)
+
+option = d.get("Option")
+state = d.get("State") or ""
+
+# A flow is finished ONLY when there is no state left. rclone returns
+# intermediate steps with a State but NO Option — its state strings are a
+# stack ("*oauth-islocal,choose_type,,` means: after oauth, still do
+# choose_type), and such a step must be continued with an empty result.
+#
+# Treating "no Option" as done is what silently truncated OneDrive setup after
+# the browser sign-in: the remote was written with only a token, and mounting
+# then failed with "unable to get drive_id and drive_type".
+if not option:
+    print(json.dumps({"ok": True, "done": state == "", "state": state,
+                      "name": "", "help": "", "default": "", "required": False,
+                      "hidden": False, "secret": False, "examples": []}))
+    sys.exit(0)
+
+examples = []
+for e in option.get("Examples") or []:
+    examples.append({"value": str(e.get("Value", "")), "help": str(e.get("Help", ""))})
+
+name = str(option.get("Name") or "")
+
+# rclone does NOT set IsPassword for every sensitive field — measured:
+# the Drive client_secret step reports IsPassword false. Masking only on
+# that flag would show a live client secret in plain text, so fall back to the
+# field name. False positives here cost nothing; a false negative leaks.
+SENSITIVE = ("secret", "password", "passwd", "token", "key")
+secret = option.get("IsPassword") is True or any(w in name.lower() for w in SENSITIVE)
+
+default = option.get("Default")
+if isinstance(default, bool):
+    # str(True) is "True", but rclone Examples use "true"/"false", so a
+    # Python-cased default would never match the choice it belongs to.
+    default = "true" if default else "false"
+default = "" if default is None else str(default)
+
+print(json.dumps({
+    "ok": True,
+    "done": False,
+    "state": d.get("State") or "",
+    "name": name,
+    "help": str(option.get("Help") or ""),
+    "default": default,
+    "required": option.get("Required") is True,
+    # Hide is a bitfield; non-zero means rclone would not show it interactively.
+    "hidden": bool(option.get("Hide")),
+    "secret": secret,
+    "examples": examples,
+}))
+'
+}
+
+# Replay a scripted sequence instead of calling rclone. Exists so the panel's
+# handling of a MULTI-STEP flow — specifically a post-auth picker like
+# OneDrive choose_type — can be tested without a live account to authenticate
+# against. Reserved type name; rclone has no backend called __fixture__.
+FIXTURE_FILE="$(dirname "$0")/test/fixtures/onedrive-like.json"
+
+fixture_step() { # fixture_step <after-state|"">
+  AFTER="$1" FIXTURE_FILE="$FIXTURE_FILE" python3 -c '
+import json, os, sys
+steps = json.load(open(os.environ["FIXTURE_FILE"]))
+after = os.environ["AFTER"]
+if after == "":
+    out = steps[0]
+else:
+    idx = next((i for i, s in enumerate(steps) if s["state"] == after), None)
+    out = steps[idx + 1] if idx is not None and idx + 1 < len(steps) else None
+if out is None:
+    print(json.dumps({"ok": True, "done": True, "state": ""}))
+else:
+    out = dict(out); out["ok"] = True; out["done"] = False
+    print(json.dumps(out))
+'
+}
+
+# Run one step, then keep continuing while rclone returns states that carry no
+# question, so the caller only ever sees a step a human can answer.
+run_until_question() { # run_until_question <first-json>
+  local out="$1" state done_ name
+  for _ in $(seq 1 10); do
+    state="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("state") or "")')"
+    done_="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("done"))')"
+    name="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("name") or "")')"
+    if [ "$done_" = "True" ] || [ -n "$name" ]; then break; fi
+    [ -n "$state" ] || break
+    out="$(rclone config update "$NAME" --continue --state "$state" --result "" \
+             --non-interactive 2>/dev/null | normalise)"
+  done
+  printf '%s' "$out"
+}
+
+case "$ACTION" in
+  start)
+    TYPE="${3:-}"
+    [ -n "$TYPE" ] || usage
+    if [ "$TYPE" = "__fixture__" ]; then fixture_step ""; exit 0; fi
+    # `rclone config create` RECREATES an existing remote from scratch — it
+    # silently discards its token and every other setting. Starting a flow on a
+    # name that already exists is therefore destructive, so refuse; callers pick
+    # a free name via Model.suggestRemoteName(), and repairing an existing
+    # remote is `resume`, below.
+    if rclone config dump 2>/dev/null | python3 -c "import json,sys;sys.exit(0 if '$NAME' in json.load(sys.stdin) else 1)"; then
+      echo "{\"ok\":false,\"done\":true,\"state\":\"\",\"error\":\"remote $NAME already exists — use resume to reconfigure it\"}"
+      exit 0
+    fi
+    # Anything after the type is a `key=value` SEED, applied before the flow
+    # starts. Some backends refuse to begin without one — zoho stops at
+    # "Error: no region set" — and that value is not something the state machine
+    # ever asks for, so there is no step to answer. Seeding is the only way in.
+    shift 3 2>/dev/null || true
+    run_until_question "$(rclone config create "$NAME" "$TYPE" "$@" --non-interactive 2>&1 | normalise)"
+    ;;
+  resume)
+    # Reconfigure an EXISTING remote without recreating it: rclone re-enters its
+    # state machine and offers to keep the current token, so a half-finished
+    # setup can be completed without another browser sign-in.
+    run_until_question "$(rclone config update "$NAME" --non-interactive 2>/dev/null | normalise)"
+    exit 0
+    ;;
+  next)
+    STATE="${3:-}"
+    RESULT="${4:-}"
+    [ -n "$STATE" ] || usage
+    case "$STATE" in fx_*) fixture_step "$STATE"; exit 0 ;; esac
+    run_until_question "$(rclone config update "$NAME" --continue --state "$STATE" --result "$RESULT" \
+      --non-interactive 2>/dev/null | normalise)"
+    ;;
+  abort)
+    # A flow abandoned midway leaves a partial remote behind; drop it rather
+    # than leaving something half-made in the user's config.
+    rclone config delete "$NAME" 2>/dev/null || true
+    echo '{"ok":true,"done":true,"state":""}'
+    ;;
+  *)
+    usage
+    ;;
+esac

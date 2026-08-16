@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Everything that can be verified without a running shell. Run before committing.
+#
+#   ./check
+#
+# What it cannot cover: QML only fails at instantiation, so a binding error
+# shows up nowhere here. After a QML change also run:
+#     omarchy restart shell && omarchy-shell davidszp.rclone status
+# and watch `journalctl --user -f | grep omarchy-shell` while opening the panel.
+set -uo pipefail
+cd "$(dirname "$0")"
+
+fails=0
+step() {
+  printf '  %-28s' "$1"
+  shift
+  if output=$("$@" 2>&1); then
+    echo "ok"
+  else
+    echo "FAIL"
+    echo "$output" | sed 's/^/      /'
+    fails=$((fails + 1))
+  fi
+}
+
+echo
+step "model tests (js)" node test/model-test.js
+step "status tests (py)" python3 test/status-test.py
+# NOT `python3 -m py_compile`: it writes __pycache__ into this directory, the
+# shell watches this directory for plugin changes, and each write (plus the
+# cleanup afterwards) fires a reload. Running the tests would then knock the
+# widget's IpcHandler out of registration — see gotcha 9. ast.parse touches
+# nothing on disk.
+step "status.py syntax" python3 -c "import ast,sys; ast.parse(open('status.py').read())"
+step "rclone-rc syntax" bash -n rclone-rc
+step "setup-daemon.sh syntax" bash -n setup-daemon.sh
+step "check syntax" bash -n check
+step "manifest" omarchy plugin validate .
+# A wrong Nerd Font codepoint is invisible in source and renders as a box. This
+# is the only thing that catches it — see test/glyph-coverage.py for why one
+# font is enough when Omarchy offers five.
+step "glyph coverage" python3 ./test/glyph-coverage.py
+# Drives the LIVE widget over IPC; skips cleanly when no shell is running.
+step "panel behaviour" ./test/panel-test.sh
+
+# Every .qml file must be referenced by another file or be an entry point;
+# an orphan is dead weight that still ships.
+echo
+entry=$(python3 -c 'import json;print(json.load(open("manifest.json"))["entryPoints"]["barWidget"])')
+for f in *.qml; do
+  base="${f%.qml}"
+  [ "$f" = "$entry" ] && continue
+  if ! grep -q "\b$base\b" $(ls *.qml | grep -v "^$f$") 2>/dev/null; then
+    echo "  WARN unreferenced component: $f"
+  fi
+done
+
+echo
+if [ "$fails" -eq 0 ]; then
+  echo "  all checks passed"
+else
+  echo "  $fails check(s) failed"
+fi
+
+# Nothing above may write into this directory — the shell watches it and every
+# write reloads the plugin. If you add a check that produces artefacts, send
+# them to a temp dir, and verify with:
+#   journalctl --user -f | grep "Local plugin changed"
+exit "$fails"

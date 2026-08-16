@@ -1,0 +1,6 @@
+# Anything written here triggers a plugin hot-reload in the running shell,
+# so build artefacts must never land in this directory in the first place.
+# This file is a safety net for when it becomes a git repo, not a licence to
+# write here.
+__pycache__/
+*.pyc
