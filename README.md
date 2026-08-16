@@ -6,6 +6,8 @@ space is left — and adding a new provider without opening a terminal.
 Built for my own machine and verified against live Google Drive, Box, OneDrive,
 Dropbox and Zoho accounts on Omarchy 4.0 / rclone 1.75.
 
+<img src="docs/panel.png" alt="The rclone panel: five mounted drives with their storage, a bandwidth cap, and recent transfers" width="420">
+
 ## Install
 
 ```bash
