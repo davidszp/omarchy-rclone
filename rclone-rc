@@ -481,6 +481,18 @@ except Exception: pass' \
           printf '%s' "$busy" | grep -qxF -- "$group" && continue
           rc core/stats-reset group="$group" >/dev/null 2>&1
         done
+
+    # Anything NOT started as a job — a file written through a mount, say —
+    # lands in a group rclone calls `global_stats`, and that group is NOT
+    # returned by core/group-list. So the loop above can never see it, and those
+    # entries survived every clear: the broom looked broken because one row kept
+    # coming back. Verified by writing a file through a mount, clearing, and
+    # watching it reappear.
+    #
+    # Safe to reset while a job runs: jobs have their own named groups, so this
+    # only zeroes the daemon-wide counters that the mount traffic contributed.
+    rc core/stats-reset group=global_stats >/dev/null 2>&1
+
     echo '{"ok":true}'
     ;;
   forget-config)
