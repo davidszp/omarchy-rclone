@@ -20,6 +20,18 @@ The alternative — a separate `rclone mount` per remote, each with its own
 Panel.qml → Service.qml → status.py → rclone rc → rclone rcd (127.0.0.1:5572)
 ```
 
+Where things live. `Panel.qml` owns layout and the keyboard cursor and nothing
+else; `Service.qml` owns all state and every subprocess; `Model.js` is pure
+logic with no QML imports, which is the only reason it can be unit tested.
+Four pieces are split out because they change for their own reasons:
+
+| file | what it owns |
+|---|---|
+| `PanelIpc.qml` | the scripting surface (`omarchy-shell <id> <fn>`), also how the tests drive the live widget |
+| `ConfigFlow.qml` | one run through rclone's interactive config machine, including cleanup of the half-made remote a failure leaves behind |
+| `AddRemoteSection.qml` | "Add a remote", the cloud grid, and the extra question some backends need first |
+| `BackendForm.qml` | the generated form for backends with no interactive setup |
+
 `status.py` shells out to `rclone rc` rather than speaking HTTP from QML,
 because that is the grain of every first-party Omarchy plugin (Dropbox shells
 to a Python helper, Tailscale to the CLI) and there is no `XMLHttpRequest`
@@ -36,8 +48,9 @@ shell access as the user running rclone". Hence loopback-only *and*
 local web page cannot POST to an authenticated endpoint.
 
 `config dump` is read directly from the config file (no daemon needed), and
-only `name` + `type` are copied into the payload — **never** the OAuth tokens
-and passwords that live in the same blocks.
+only `name` + `type` are copied into the payload (plus an `incomplete` flag
+derived from a missing type) — **never** the OAuth tokens and passwords that
+live in the same blocks.
 
 ## Two cost tiers
 
@@ -382,6 +395,16 @@ Non-OAuth backends never enter the machine at all — measured: `s3`, `b2`,
 `webdav`, `sftp`, `crypt` all return done on the first call, because their
 options are ordinary key=values. So the loop is only ever walked by OAuth flows.
 
+Those backends are reached the OTHER way: `BackendForm.qml` renders a form from
+`config/providers` (all 69 backends, each option flagged Required/Advanced/
+IsPassword) and passes every answer as a seed to a single `config create`. S3,
+B2, SFTP, WebDAV and FTP are in the grid on that path. Two traps found building
+it: rclone's `Required` flag is not the whole story — s3 marks nothing required
+because it depends on which provider you pick, so the form leads with the first
+few fields when a backend declares none — and password fields need no special
+handling, because `config create --non-interactive` obscures them itself
+(verified by revealing a stored value).
+
 **Verified with a real account, 2026-08-15:** Box connected entirely from the
 panel — rclone's built-in client_id, no console work, no terminal. The resulting
 remote lists real folders and probes to `586.1 MB used of 53.7 GB`. Also stepped
@@ -389,10 +412,11 @@ Drive's machine with no authentication (`client_id_warning → client_id_set →
 client_secret_set`), and cancelled a flow midway to confirm no partial remote is
 left behind.
 
-**Still unexercised:** Box's state is `*oauth-islocal,,,` — nothing follows the
-handshake. So this proves the loop *through* OAuth, but NOT the post-auth picker
-branch. OneDrive's `choose_type` (which drive?) remains untested, and that is the
-branch the loop exists for.
+**The post-auth branch** is now covered by a fixture rather than a live account:
+`test/fixtures/onedrive-like.json` walks islocal → type → org picker → drive id →
+secret through the real widget in `test/panel-test.sh`. That proves OUR half.
+What stays unverified is that rclone's actual `choose_type` output matches the
+fixture's shape — only a real OneDrive account settles that.
 
 ```bash
 omarchy-shell io.github.davidszp.omarchy-rclone connect box    # start a flow by backend type

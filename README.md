@@ -19,7 +19,8 @@ Add the widget to your bar, click it, and follow the panel. It sets up the
 rclone daemon on first run and walks you through connecting a drive. If rclone
 isn't installed it offers to do that too.
 
-Needs Omarchy 4.x and Python 3. That's it.
+Needs Omarchy 4.x. (Python 3 is already there — `uwsm`, which starts your
+session, depends on it.)
 
 ## What it does
 
@@ -30,6 +31,8 @@ Needs Omarchy 4.x and Python 3. That's it.
   falls back to `rclone config` in a terminal.
 - **Copy, mirror or two-way sync** a folder, with a dry run first.
 - **Cap the bandwidth** so a big upload doesn't eat your connection.
+- **Open a drive** in your file manager — double click the row, or use its menu.
+- **Remove a remote**, or stop every transfer and unmount everything at once.
 
 ## Mounting and transferring are different things
 
