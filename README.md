@@ -86,8 +86,6 @@ traps found on the way.
   through the terminal.
 - **Encrypted remotes (`crypt`)** — wraps an existing remote, so it needs a
   different form than "pick a provider and sign in".
-- **Scheduling** — every transfer is one-shot and manual. No "back this up
-  nightly" yet, which is the first thing you'll want after using it twice.
 - **Notifications** — a mount that fails at login is only visible if you look.
 
 ## License
