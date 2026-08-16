@@ -149,7 +149,7 @@ licence. Verify any new check with:
 
 **11. Hot-reload does NOT pick up NEW IpcHandler functions.** Editing the body of
 an existing handler reloads fine, but adding a function leaves
-`omarchy-shell davidszp.rclone <new>` answering `Function not found.` indefinitely —
+`omarchy-shell io.github.davidszp.omarchy-rclone <new>` answering `Function not found.` indefinitely —
 even after `omarchy-shell shell rescanPlugins`. Cause: with two monitors the
 widget is instantiated twice, only one `IpcHandler` per target wins the
 registration, and reload does not hand the win to the new instance. Fix is
@@ -230,10 +230,10 @@ can name its provider.
 
 ```bash
 systemctl --user status rclone-rcd.service         # daemon up?
-python3 ~/.config/omarchy/plugins/davidszp.rclone/status.py | python3 -m json.tool
-omarchy-shell davidszp.rclone status                  # what the LIVE widget thinks
-omarchy-shell davidszp.rclone refresh                 # force a poll
-omarchy-shell davidszp.rclone setup                   # jump into the Drive wizard
+python3 ~/.config/omarchy/plugins/io.github.davidszp.omarchy-rclone/status.py | python3 -m json.tool
+omarchy-shell io.github.davidszp.omarchy-rclone status                  # what the LIVE widget thinks
+omarchy-shell io.github.davidszp.omarchy-rclone refresh                 # force a poll
+omarchy-shell io.github.davidszp.omarchy-rclone setup                   # jump into the Drive wizard
 journalctl --user --since "5 min ago" | grep omarchy-shell   # QML errors
 ```
 
@@ -260,7 +260,7 @@ Before committing anything:
 change also run `omarchy restart shell`, then open the panel while watching
 `journalctl --user -f | grep omarchy-shell`.
 
-`omarchy-shell davidszp.rclone status` is the check that matters: it returns
+`omarchy-shell io.github.davidszp.omarchy-rclone status` is the check that matters: it returns
 `Model.statusText()` computed from a real parsed payload, so a sensible answer
 proves the whole chain — widget → service → helper → rc → daemon.
 
@@ -395,8 +395,8 @@ branch. OneDrive's `choose_type` (which drive?) remains untested, and that is th
 branch the loop exists for.
 
 ```bash
-omarchy-shell davidszp.rclone connect box    # start a flow by backend type
-omarchy-shell davidszp.rclone flowAsks       # what it is currently asking
-omarchy-shell davidszp.rclone cancel         # abort and clean up
+omarchy-shell io.github.davidszp.omarchy-rclone connect box    # start a flow by backend type
+omarchy-shell io.github.davidszp.omarchy-rclone flowAsks       # what it is currently asking
+omarchy-shell io.github.davidszp.omarchy-rclone cancel         # abort and clean up
 ```
 

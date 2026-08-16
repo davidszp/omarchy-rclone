@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "davidszp.rclone",
+  "id": "io.github.davidszp.omarchy-rclone",
   "name": "rclone",
   "version": "0.1.0",
   "author": "david",

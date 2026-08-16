@@ -11,7 +11,7 @@ Dropbox and Zoho accounts on Omarchy 4.0 / rclone 1.75.
 ## Install
 
 ```bash
-git clone https://github.com/davidszp/omarchy-rclone ~/.config/omarchy/plugins/davidszp.rclone
+git clone https://github.com/davidszp/omarchy-rclone ~/.config/omarchy/plugins/io.github.davidszp.omarchy-rclone
 omarchy restart shell
 ```
 

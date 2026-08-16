@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell.Io
 import "Model.js" as Model
 
-// The plugin's scripting surface: `omarchy-shell davidszp.rclone <function>`.
+// The plugin's scripting surface: `omarchy-shell io.github.davidszp.omarchy-rclone <function>`.
 //
 // Split out of Panel.qml because it is a stable API rather than part of the
 // view — it changes for different reasons and at a different rate than the

@@ -5,7 +5,7 @@
 #
 # What it cannot cover: QML only fails at instantiation, so a binding error
 # shows up nowhere here. After a QML change also run:
-#     omarchy restart shell && omarchy-shell davidszp.rclone status
+#     omarchy restart shell && omarchy-shell io.github.davidszp.omarchy-rclone status
 # and watch `journalctl --user -f | grep omarchy-shell` while opening the panel.
 set -uo pipefail
 cd "$(dirname "$0")"

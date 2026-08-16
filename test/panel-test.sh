@@ -12,7 +12,7 @@
 # runnable on a machine with no session.
 set -uo pipefail
 
-IPC="omarchy-shell davidszp.rclone"
+IPC="omarchy-shell io.github.davidszp.omarchy-rclone"
 fails=0
 checks=0
 

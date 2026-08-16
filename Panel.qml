@@ -11,8 +11,8 @@ import "Model.js" as Model
 // state lives in Service.qml and each row is its own component.
 Panel {
   id: root
-  moduleName: "davidszp.rclone"
-  ipcTarget: "davidszp.rclone"
+  moduleName: "io.github.davidszp.omarchy-rclone"
+  ipcTarget: "io.github.davidszp.omarchy-rclone"
   manageIpc: false
 
   property string focusSection: "bandwidth"
