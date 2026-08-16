@@ -140,6 +140,24 @@ function eq(actual, expected, label) {
   eq(M.baseName("c.txt"), "c.txt", "basename of a bare name")
 }
 
+// ---- transferring rows -----------------------------------------------------
+// An in-flight transfer names its remote for the same reason RECENT does: with
+// several drives mounted, "9 MB · 191 KB/s" does not say which one is busy.
+{
+  const row = { bytes: 1_040_000, size: 9_000_000, speed: 191_000, eta: 38 }
+  eq(M.transferSubtitle(row, { name: "zoho" }),
+     "1.04 MB of 9 MB · 191 KB/s · 38s left · zoho",
+     "the remote is named LAST, matching RECENT's ordering")
+  eq(M.transferSubtitle(row), "1.04 MB of 9 MB · 191 KB/s · 38s left",
+     "an unresolved remote just leaves it off rather than printing 'undefined'")
+  eq(M.transferSubtitle(row, { name: "" }), "1.04 MB of 9 MB · 191 KB/s · 38s left",
+     "an empty name is treated as no name")
+  // A transfer that has not reported size or eta yet must not render stray
+  // separators around an otherwise empty subtitle.
+  eq(M.transferSubtitle({}, { name: "box" }), "box",
+     "with nothing else known, the remote stands alone")
+}
+
 // ---- job rows --------------------------------------------------------------
 // The label is the _group rclone-rc set: "<verb> <src> -> <dst>".
 {

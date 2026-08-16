@@ -387,7 +387,7 @@ function transferRemote(row, remotes) {
   return remoteForFs(remotes, row.srcFs) || remoteForFs(remotes, row.dstFs)
 }
 
-function transferSubtitle(row) {
+function transferSubtitle(row, remote) {
   var parts = []
   var size = Number(row.size || 0)
   if (size > 0) parts.push(formatBytes(row.bytes) + " of " + formatBytes(size))
@@ -395,6 +395,12 @@ function transferSubtitle(row) {
   if (speed) parts.push(speed)
   var eta = formatEta(row.eta)
   if (eta) parts.push(eta + " left")
+  // Which remote this is moving through, LAST — the same position RECENT uses,
+  // so the eye finds the provider in one place across both lists. With more
+  // than one drive configured, "9 MB · 191 KB/s" alone does not say whether
+  // your upload or your backup is the thing saturating the link.
+  var provider = remote ? String(remote.name || "") : ""
+  if (provider) parts.push(provider)
   return parts.join(" · ")
 }
 

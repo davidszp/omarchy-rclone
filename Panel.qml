@@ -722,6 +722,7 @@ Panel {
                 required property var modelData
                 width: column.width
                 transfer: modelData
+                remote: Model.transferRemote(modelData, rclone.remotes)
                 ui: theme
               }
             }

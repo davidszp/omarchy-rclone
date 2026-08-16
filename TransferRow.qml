@@ -12,6 +12,9 @@ Column {
 
   property var transfer: null
   property QtObject ui: null
+  // Resolved by the panel, not looked up here: the row has no service
+  // reference and RECENT already resolves its provider the same way.
+  property var remote: null
 
   spacing: Style.space(4)
 
@@ -44,7 +47,7 @@ Column {
 
   Text {
     width: parent.width
-    text: Model.transferSubtitle(root.transfer || {})
+    text: Model.transferSubtitle(root.transfer || {}, root.remote)
     color: ui ? ui.dim : Color.foreground
     font.family: ui ? ui.fontFamily : Style.font.family
     font.pixelSize: Style.font.caption

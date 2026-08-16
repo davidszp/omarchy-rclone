@@ -236,6 +236,12 @@ def transferring_rows(stats):
             "speed": float(item.get("speed") or 0),
             "eta": item.get("eta"),
             "group": str(item.get("group", "")),
+            # Which remote this file is moving through. Dropped originally, so
+            # the panel could not name the provider on an in-flight transfer
+            # even though RECENT named it on the finished one — the QML asked
+            # for it and always got nothing back.
+            "srcFs": str(item.get("srcFs", "")),
+            "dstFs": str(item.get("dstFs", "")),
         })
     return rows
 

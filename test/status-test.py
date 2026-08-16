@@ -109,7 +109,8 @@ eq(status.transferring_rows({"transferring": [{
     "name": "blob.bin", "bytes": 100, "size": 1000, "percentage": 10,
     "speed": 2.5, "eta": 30, "group": "job/7"}]}),
    [{"name": "blob.bin", "bytes": 100, "size": 1000, "percentage": 10,
-     "speed": 2.5, "eta": 30, "group": "job/7"}], "full row passes through")
+     "speed": 2.5, "eta": 30, "group": "job/7", "srcFs": "", "dstFs": ""}],
+   "full row passes through")
 eq(status.transferring_rows({}), [], "no transferring key")
 eq(status.transferring_rows({"transferring": None}), [], "null transferring")
 eq(status.transferring_rows({"transferring": ["not a dict", 5]}), [],
@@ -117,6 +118,20 @@ eq(status.transferring_rows({"transferring": ["not a dict", 5]}), [],
 row = status.transferring_rows({"transferring": [{"name": "x"}]})[0]
 eq((row["bytes"], row["size"], row["percentage"]), (0, 0, 0), "missing numbers default to 0")
 eq(row["eta"], None, "a missing eta stays None, NOT 0 — 0 would render as 'finishing now'")
+
+# ---- transferring rows carry their remote ----------------------------------
+# The panel names the provider on an in-flight transfer the same way RECENT
+# names it on a finished one — but it can only do that if these fields survive.
+# They were dropped here originally, so the QML asked and always got nothing.
+rows = status.transferring_rows({"transferring": [{
+    "name": "sample-01.bin", "bytes": 3141632, "size": 9000000,
+    "speed": 1380400.0, "eta": 3, "group": "copy zoho:hero-demo -> /tmp/out",
+    "srcFs": "zoho:hero-demo", "dstFs": "/tmp/out",
+}]})
+eq(rows[0]["srcFs"], "zoho:hero-demo", "the source fs survives into the row")
+eq(rows[0]["dstFs"], "/tmp/out", "so does the destination")
+eq(status.transferring_rows({"transferring": [{"name": "x"}]})[0]["srcFs"], "",
+   "a transfer with no fs reported yields empty strings, not None")
 
 # ---- transferred_rows ------------------------------------------------------
 # rclone returns oldest-first; the panel wants newest-first.
