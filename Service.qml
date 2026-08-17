@@ -119,8 +119,27 @@ Item {
   // The runners each refuse to start while already running, so nothing here needs
   // a global flag to prevent a double click — `probing` guards the probe button
   // itself. `busy` means "a user action that changes something is in flight".
-  readonly property bool busy: actionRunner.running || mountRunner.running
+  readonly property bool busy: _settling || actionRunner.running || mountRunner.running
     || pinRunner.running || createRunner.running || syncRunner.running
+
+  // An action has finished but its effect has NOT been read back yet.
+  //
+  // Without this the panel briefly shows stale state as actionable: unmounting
+  // the last mount dimmed the unmount-all button, then BRIGHTENED it again the
+  // moment the unmount returned, then switched it off 1.2s later when the poll
+  // finally reported no mounts. Three transitions, seen as a blink before the
+  // button went away. The middle one is a lie — there was nothing left to unmount
+  // at that point, the panel just did not know yet.
+  //
+  // So an action stays "busy" until the state behind it has been re-read. Cleared
+  // when the poll lands, whether it succeeded or not, so a failing helper cannot
+  // leave every button disabled for good.
+  property bool _settling: false
+
+  function _settleAfterAction() {
+    _settling = true
+    delayedRefresh.restart()
+  }
 
   // Two intervals, because the two states have genuinely different costs: a
   // running transfer wants a live progress bar, an idle daemon wants to be left
@@ -513,7 +532,12 @@ Item {
       suppressRunner.start([pluginDir + "rclone-rc", "unsuppress", "", target0])
     }
     if (!mountRunner.start([pluginDir + "rclone-rc", "mount", String(fs), expandPath(mountPoint)])) return
-    report("Mounting " + fs + "…", false)
+    // Says nothing on purpose. The status line is a ROW, so announcing this grows
+    // the panel and finishing shrinks it — the list visibly jumped down and back,
+    // and only when the mount happened to take longer than the message's delay,
+    // which made it look random. The row appearing in MOUNTS is the feedback, and
+    // it is better feedback than the word. Failures still report: they persist,
+    // and there is nothing else to see.
   }
 
   // `manual` marks a deliberate switch-off, which suppresses auto-remount until
@@ -531,7 +555,7 @@ Item {
     if (force === true) argv.push("force")
     if (!mountRunner.start(argv)) return
     if (manual) suppressRunner.start([pluginDir + "rclone-rc", "suppress", "", target])
-    report("Unmounting…", false)
+    // Silent for the same reason as mountPath: the row leaving the list says it.
   }
 
   // Move a live mount to a different folder.
@@ -705,7 +729,7 @@ Item {
     pluginDir: root.pluginDir
     onReported: function(message, isError) { root.report(message, isError) }
     onFinished: function(remoteName) { root.remoteCreated(remoteName) }
-    onRefreshNeeded: delayedRefresh.restart()
+    onRefreshNeeded: root._settleAfterAction()
   }
 
   // The OAuth handshake now happens inside the DAEMON, not in a child process of
@@ -773,8 +797,14 @@ Item {
   CommandRunner {
     id: statusRunner
     failMessage: "Could not run the rclone status helper"
-    onSucceeded: function(output) { root.applyStatus(output) }
-    onFailed: function(message) { root.lastError = message }
+    // ORDER MATTERS. Clearing _settling first drops `busy` while the payload is
+    // still the old one, so every binding re-evaluates against stale state — which
+    // is exactly the blink this flag exists to remove. Apply the new state, THEN
+    // stop holding the controls.
+    onSucceeded: function(output) { root.applyStatus(output); root._settling = false }
+    // Cleared here too: a helper that fails must not leave the panel permanently
+    // disabled waiting for a state that will never arrive.
+    onFailed: function(message) { root._settling = false; root.lastError = message }
   }
 
   CommandRunner {
@@ -803,7 +833,7 @@ Item {
       }
       root._remountFs = ""
       root.actionStatus = ""
-      delayedRefresh.restart()
+      root._settleAfterAction()
     }
     onFailed: function(message) {
       root._noteMountResult(false)
@@ -811,7 +841,7 @@ Item {
       // will not let go, so the original is still live and usable here.
       root._remountFs = ""
       root.report(message, true)
-      delayedRefresh.restart()
+      root._settleAfterAction()
     }
   }
 
@@ -820,21 +850,21 @@ Item {
     failMessage: "Could not update the login mounts"
     // Re-read either way, so the pin icon reflects what is on disk rather than
     // what we hoped we wrote.
-    onSucceeded: function() { delayedRefresh.restart() }
-    onFailed: function(message) { root.report(message, true); delayedRefresh.restart() }
+    onSucceeded: function() { root._settleAfterAction() }
+    onFailed: function(message) { root.report(message, true); root._settleAfterAction() }
   }
 
   CommandRunner {
     id: syncRunner
     failMessage: "Job command failed"
-    onSucceeded: function() { root.actionStatus = ""; delayedRefresh.restart() }
-    onFailed: function(message) { root.report(message, true); delayedRefresh.restart() }
+    onSucceeded: function() { root.actionStatus = ""; root._settleAfterAction() }
+    onFailed: function(message) { root.report(message, true); root._settleAfterAction() }
   }
 
   CommandRunner {
     id: suppressRunner
     failMessage: "Could not record the switch state"
-    onSucceeded: function() { delayedRefresh.restart() }
+    onSucceeded: function() { root._settleAfterAction() }
     onFailed: function(message) { root.report(message, true) }
   }
 
@@ -865,8 +895,8 @@ Item {
   CommandRunner {
     id: actionRunner
     failMessage: "Command failed"
-    onSucceeded: function() { root.actionStatus = ""; delayedRefresh.restart() }
-    onFailed: function(message) { root.report(message, true); delayedRefresh.restart() }
+    onSucceeded: function() { root.actionStatus = ""; root._settleAfterAction() }
+    onFailed: function(message) { root.report(message, true); root._settleAfterAction() }
   }
 
   CommandRunner {
@@ -882,18 +912,18 @@ Item {
       if (parsed && parsed.ok === false) {
         root.report(String(parsed.error || "Could not connect Google Drive"), true)
         root._creatingName = ""
-        delayedRefresh.restart()
+        root._settleAfterAction()
         return
       }
       root.report("Google Drive connected", false)
-      delayedRefresh.restart()
+      root._settleAfterAction()
       if (root._creatingName !== "") root.remoteCreated(root._creatingName)
       root._creatingName = ""
     }
     onFailed: function(message) {
       root.report(message, true)
       root._creatingName = ""
-      delayedRefresh.restart()
+      root._settleAfterAction()
     }
   }
 }

@@ -234,6 +234,20 @@ dim, undim, dim, undim around the click. `busy` means "a user action that change
 something is in flight". Nothing needs a global flag to stop a double click: each
 runner refuses to start while running, and the probe button gates on `probing`.
 
+**A control must also not re-enable while its effect is still being read back.**
+Unmounting the last mount dimmed unmount-all, BRIGHTENED it the moment the unmount
+returned, then switched it off 1.2s later when the poll reported no mounts — three
+transitions, seen as a blink. The middle one was a lie: nothing was left to
+unmount, the panel just did not know yet. `_settling` holds `busy` from the end of
+an action until the next poll lands, and **the order in `statusRunner.onSucceeded`
+matters** — apply the payload first, clear the flag second, or bindings re-evaluate
+against stale state and the blink comes back from the fix itself.
+
+Mount and unmount also **say nothing** in the status line. Announcing them grew the
+panel by a row and finishing shrank it, and because the message is delayed ~700ms
+it only appeared when the action happened to be slow — which made the jump look
+random. The row appearing or leaving the list is better feedback than the word.
+
 `omarchy-shell <id> buttonState` prints every input to those buttons in one call,
 because with each IPC round trip costing ~250ms you cannot sample four properties
 separately fast enough to catch which one flipped. For anything shorter than that,

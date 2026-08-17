@@ -22,6 +22,7 @@ Panel {
   property int actionIndex: 0
   property bool cursorActive: false
   property bool setupOpen: false
+
   // Readable by PanelIpc; the wizard itself lives deep in the layout.
   readonly property bool setupWizardDirty: setupWizard.dirty
   // Remote name whose inline "mount as…" form is open; "" means none.
