@@ -282,6 +282,65 @@ eq(status.mount_rows({"mountPoints": ["nope"]}), [], "non-dict members are skipp
 eq(tuple(status.SAFE_CONFIG_KEYS), ("type",),
    "only 'type' is copied out of a remote's config block")
 
+# ---- classify_config -------------------------------------------------------
+# THE ZOMBIE-REMOTE REGRESSION. A section with no `type` used to be reported as
+# a half-finished remote, so the panel listed it, labelled it "setup never
+# finished — remove it", and the trash button ran a delete that the daemon
+# undid on its next token refresh: an undeletable row per removed remote.
+#
+# The classification rests on two measured facts about rclone 1.75 (see
+# classify_config's docstring): `config create` writes `type` in the same write
+# as the section, and `config update --continue` refuses a name that is not
+# already in the file. So no setup path can leave a section without a `type`,
+# and a typeless section is always residue from a write-back.
+remotes, residue = status.classify_config({
+    "gdrive": {"type": "drive", "token": "{secret}"},
+    "box": {"token": "{secret}"},
+})
+eq([r["name"] for r in remotes], ["gdrive"], "a typeless section is not a remote")
+eq(residue, ["box"], "a typeless section is reported as residue")
+
+# The exact artefact observed on 2026-08-17: three remotes were removed in the
+# panel and came back holding nothing but a refreshed OAuth token.
+_, residue = status.classify_config({
+    "box": {"token": '{"access_token":"x","expiry":"2026-08-17T11:26:38+02:00"}'},
+    "dropbox": {"token": '{"access_token":"y"}'},
+    "onedrive": {"token": '{"access_token":"z"}'},
+    "zoho": {"type": "zoho", "region": "com"},
+})
+eq(residue, ["box", "dropbox", "onedrive"], "every token-only section is residue")
+
+remotes, residue = status.classify_config({})
+eq((remotes, residue), ([], []), "an empty config yields nothing")
+
+remotes, residue = status.classify_config({"broken": "not a dict"})
+eq((remotes, residue), ([], ["broken"]), "a non-dict section cannot pass as a remote")
+
+# `incomplete` now means what it says: `config create` wrote the section and its
+# type, and the flow was abandoned before answering anything. Measured shape —
+# an aborted dropbox setup leaves exactly `[db]` + `type = dropbox`.
+remotes, _ = status.classify_config({"db": {"type": "dropbox"}})
+eq(remotes[0]["incomplete"], True, "typed but empty is an unfinished setup")
+
+remotes, _ = status.classify_config({"db": {"type": "dropbox", "token": "{}"}})
+eq(remotes[0]["incomplete"], False, "typed with a token is a finished setup")
+
+# Backends that need no configuration at all must not be called unfinished —
+# `type = local` on its own is a perfectly usable remote.
+remotes, _ = status.classify_config({"disk": {"type": "local"}})
+eq(remotes[0]["incomplete"], False, "a self-sufficient backend is never unfinished")
+
+# Residue is dropped before probe_remotes sees it, so a removed remote cannot
+# cost a 15s probe on every refresh either.
+remotes, _ = status.classify_config({"box": {"token": "{}"}, "z": {"type": "zoho"}})
+eq([r["name"] for r in remotes], ["z"], "residue is not handed to the prober")
+
+# Secrets must not ride along in the payload just because the block held them.
+remotes, _ = status.classify_config(
+    {"g": {"type": "drive", "token": "{tok}", "client_secret": "shh", "pass": "p"}})
+eq(sorted(remotes[0]), ["incomplete", "name", "type"],
+   "only name/type/incomplete reach the shell")
+
 # ---- job_rows --------------------------------------------------------------
 # Reads per-group stats, and must ignore the jobs our own rc calls create.
 class FakeClient:

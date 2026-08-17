@@ -16,6 +16,10 @@ function defaultStatus() {
     rcRunning: false,
     rcError: "",
     remotes: [],
+    // Names of config sections that are NOT remotes; see classify_config() in
+    // status.py. Defaulted here so an older helper's payload cannot leave the
+    // panel reaping against a stale list.
+    configResidue: [],
     mounts: [],
     autoMounts: [],
     suppressed: [],
@@ -50,7 +54,7 @@ function parseStatus(raw) {
   for (var key in base) {
     if (parsed[key] === undefined || parsed[key] === null) parsed[key] = base[key]
   }
-  var arrays = ["remotes", "mounts", "autoMounts", "suppressed", "transferring", "transferred", "jobs"]
+  var arrays = ["remotes", "configResidue", "mounts", "autoMounts", "suppressed", "transferring", "transferred", "jobs"]
   for (var i = 0; i < arrays.length; i++) {
     if (!Array.isArray(parsed[arrays[i]])) parsed[arrays[i]] = []
   }
@@ -257,10 +261,14 @@ function syncConfirmMessage(mode, dstFs, homeDir) {
 // how far the cursor could travel.
 function rowActions(state) {
   if (!state || !state.remote) return [""]
-  // A half-made remote has no type, so there is nothing to mount, sync or
-  // reconfigure — offering those would be offering actions that cannot work.
-  // Removal is the only honest option, and it is one press away rather than
-  // hidden behind the overflow.
+  // An unfinished remote carries a type and nothing else (see classify_config in
+  // status.py): `config create` wrote the section and the flow was abandoned
+  // before answering a single question. There is nothing yet to mount or sync, so
+  // offering those would be offering actions that cannot work. Removal is one
+  // press away rather than hidden behind the overflow.
+  //
+  // Finishing one instead is a CLI job — `rclone-config resume <name>`, which the
+  // panel does not expose. Wire that up here if it is ever wanted.
   if (state.remote.incomplete === true) return ["", "remove"]
   var actions = ["", "mount", "more"]
   if (!state.expanded) return actions

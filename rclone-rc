@@ -16,6 +16,7 @@
 #   rclone-rc stop-all                           stop every transfer we started
 #   rclone-rc unmount-all [force]                unmount everything, and suppress it
 #   rclone-rc remove-remote "gdrive" [force]     unmount, unpin, then delete the config
+#   rclone-rc reap-residue                       delete config sections with no `type`
 #
 # Going through the daemon (rather than spawning `rclone mount`/`rclone sync`)
 # is what makes the work visible to mount/listmounts, job/list and core/stats,
@@ -47,7 +48,7 @@ ENV_FILE="$HOME/.config/rclone/rcd.env"
 . "$ENV_FILE"
 
 usage() {
-  echo "usage: rclone-rc <mount|unmount|pin|unpin|copy|mirror|bisync|remount|repin|suppress|unsuppress|bwlimit|stop|forget-config|clear-recents|stop-all|unmount-all|remove-remote> <fs|jobid|rate> [dest] [dry|resync]" >&2
+  echo "usage: rclone-rc <mount|unmount|pin|unpin|copy|mirror|bisync|remount|repin|suppress|unsuppress|bwlimit|stop|forget-config|clear-recents|stop-all|unmount-all|remove-remote|reap-residue> <fs|jobid|rate> [dest] [dry|resync]" >&2
   exit 1
 }
 
@@ -59,7 +60,7 @@ case "$ACTION" in
   # below demands a mountpoint, which silently rejected it as a usage error —
   # and the caller is a QML runner whose stderr nobody reads, so the feature
   # simply never fired.
-  forget-config|clear-recents|stop-all|unmount-all) : ;;
+  forget-config|clear-recents|stop-all|unmount-all|reap-residue) : ;;
   remove-remote) [ -n "$FS" ] || usage ;;
   "")   usage ;;
   *)    [ -n "$MOUNTPOINT" ] || usage ;;
@@ -113,14 +114,64 @@ unmount_verified() {
     fi
   fi
 
+  # Give rclone's OWN unmount a real chance before forcing, because the two are
+  # not equivalent: `mount/unmount` shuts the VFS down and drops it from
+  # `vfs/list`, while `fusermount3 -u` removes the kernel mount behind rclone's
+  # back and leaves that VFS ACTIVE for the lifetime of the daemon (measured
+  # both ways against rclone 1.75). An orphaned VFS keeps polling for changes,
+  # so it keeps refreshing its OAuth token, and every refresh writes the token
+  # back into the config file. Do that to a remote whose section has just been
+  # deleted and rclone RE-CREATES the section holding a token and no `type` —
+  # the undeletable "zombie remote" this loop exists to avoid. Nothing in the
+  # rc API can shut an orphaned VFS down again; only restarting the daemon can.
+  #
+  # 0.3s was too short to tell "slow" from "stuck": mount/unmount returns
+  # success immediately and the kernel mount goes a moment later.
   rc mount/unmount mountPoint="$target" >/dev/null 2>&1 || true
-  sleep 0.3
-  if ! mountpoint -q "$target" 2>/dev/null; then return 0; fi
+  for _ in $(seq 1 10); do
+    if ! mountpoint -q "$target" 2>/dev/null; then return 0; fi
+    sleep 0.3
+  done
+
+  # Still there after 3s: force it, and say what that costs.
   fusermount3 -u "$target" 2>/dev/null || fusermount -u "$target" 2>/dev/null || true
   sleep 0.3
-  if ! mountpoint -q "$target" 2>/dev/null; then return 0; fi
+  if ! mountpoint -q "$target" 2>/dev/null; then
+    echo "forced unmount of $target — rclone rcd still holds a filesystem for it;" \
+         "restart rclone-rcd.service to clear it" >&2
+    return 0
+  fi
   echo "could not unmount $target — something is still using it" >&2
   return 1
+}
+
+# Delete config sections that are not remotes: no `type`, so rclone itself does
+# not list them, nothing can mount or repair them, and the panel must not offer
+# them as remotes. See classify_config() in status.py for why the only way to
+# get one is rclone writing a token back into a section deleted underneath it.
+#
+# Idempotent, and deliberately narrow: a section is only touched when `type` is
+# absent, so a real remote can never be caught by this even if it is broken in
+# every other way.
+reap_residue() { # reap_residue -> names reaped, one per line
+  local names
+  names="$(rclone config dump 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for name in sorted(data):
+    block = data[name]
+    if isinstance(block, dict) and not str(block.get("type", "")):
+        print(name)
+' || true)"
+  [ -n "$names" ] || return 0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    rclone config delete "$name" 2>/dev/null || true
+    echo "$name"
+  done <<< "$names"
 }
 
 # Mount points switched off by hand. On DISK, not in the panel: the widget is
@@ -393,7 +444,24 @@ if len(kept) != len(rows):
 PY
 
     rclone config delete "$FS"
+    # The daemon can write a token back into the section between the unmount and
+    # this delete, which puts the section straight back — typeless, because the
+    # write only carries the token. Sweep after deleting so the removal is not
+    # quietly undone a second later.
+    reap_residue >/dev/null || true
     echo "{\"ok\":true,\"removed\":\"$FS\"}"
+    ;;
+  reap-residue)
+    # Standalone because the write-back can land at ANY time (whenever an
+    # orphaned VFS refreshes its token), not only during a removal. The panel
+    # calls this when status reports configResidue.
+    # Names, not just a count: this deletes something from the user's config
+    # without being asked, so what went must be recoverable from the journal.
+    # Built by python rather than by hand — a remote name can contain a quote.
+    REAPED="$(reap_residue || true)" \
+      python3 -c 'import json, os
+names = [n for n in os.environ["REAPED"].splitlines() if n]
+print(json.dumps({"ok": True, "reaped": len(names), "names": names}))'
     ;;
   stop-all)
     # Stops every transfer WE started. Filtered by group prefix for the same

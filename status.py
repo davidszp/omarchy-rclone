@@ -54,6 +54,11 @@ TIMEOUT_PROBE = 15
 # remote's config block is dropped on the floor.
 SAFE_CONFIG_KEYS = ("type",)
 
+# Backends that are fully usable with nothing but a `type`. For every other
+# backend a section holding only `type` is a setup that was abandoned before it
+# asked for a single credential.
+SELF_SUFFICIENT_TYPES = ("local", "memory")
+
 
 def read_env_file(path):
     """Parse the KEY=value file shared with the rclone-rcd systemd unit."""
@@ -199,28 +204,59 @@ class Rclone:
         """Remote name + type, read straight from the config file (no daemon)."""
         code, stdout, _ = run([self.binary, "config", "dump"], TIMEOUT_FAST)
         if code != 0 or not stdout:
-            return []
+            return [], []
         try:
             parsed = json.loads(stdout)
         except json.JSONDecodeError:
-            return []
-        remotes = []
-        for name in sorted(parsed):
-            block = parsed[name] if isinstance(parsed[name], dict) else {}
-            remote = {"name": name}
-            for key in SAFE_CONFIG_KEYS:
-                remote[key] = str(block.get(key, ""))
-            # A section with no `type` is a HALF-MADE remote: `rclone config
-            # create` writes the section before the flow that fills it in, so a
-            # crash, a shell restart, or a killed terminal mid-setup leaves this
-            # behind. It cannot be mounted, probed or repaired — only removed.
-            #
-            # Worth surfacing loudly because `rclone listremotes` does NOT list
-            # a typeless section, so the usual way of checking gives a false
-            # all-clear and the orphan is invisible outside the config file.
-            remote["incomplete"] = remote.get("type", "") == ""
-            remotes.append(remote)
-        return remotes
+            return [], []
+        return classify_config(parsed)
+
+
+def classify_config(parsed):
+    """Split `rclone config dump` into real remotes and config RESIDUE.
+
+    Returns (remotes, residue): `residue` holds the names of sections that are
+    in the config file but are not remotes at all, because they carry no `type`.
+
+    A typeless section is NOT a half-finished setup, which is what this used to
+    claim, and getting that backwards is what put undeletable "zombie" rows in
+    the panel. Both halves of the rule were measured against rclone 1.75:
+
+      * `rclone config create <name> <type>` writes the section and its `type`
+        in the SAME write, so a flow abandoned at the browser step leaves
+        exactly `[name]` + `type = dropbox` — typed, and repairable by resume.
+      * `rclone config update <name> --continue` REFUSES a name that is not
+        already in the file ("couldn't find type field in config"), so the
+        wizard cannot produce a typeless section either.
+
+    That leaves exactly one producer: rclone writing a value back into a
+    section that has been DELETED underneath it. A long-lived `rclone rcd`
+    that still holds an orphaned VFS for a removed remote does this every time
+    that remote's OAuth token is refreshed — the section reappears holding a
+    `token` and nothing else. It cannot be mounted, probed, resumed or fixed,
+    and offering it as a remote just invites a delete that gets undone again on
+    the next refresh. So it is not shown as a remote; `rclone-rc reap-residue`
+    deletes it.
+    """
+    remotes = []
+    residue = []
+    for name in sorted(parsed):
+        block = parsed[name] if isinstance(parsed[name], dict) else {}
+        kind = str(block.get("type", ""))
+        if kind == "":
+            residue.append(name)
+            continue
+        remote = {"name": name}
+        for key in SAFE_CONFIG_KEYS:
+            remote[key] = str(block.get(key, ""))
+        # Typed but carrying nothing else: `config create` got as far as writing
+        # the section and the flow was then abandoned before answering a single
+        # question. `resume` can still finish it, and removing it loses nothing.
+        remote["incomplete"] = (
+            not [k for k in block if k != "type"] and kind not in SELF_SUFFICIENT_TYPES
+        )
+        remotes.append(remote)
+    return remotes, residue
 
 
 def transferring_rows(stats):
@@ -583,6 +619,9 @@ def main():
         "rcUrl": "",
         "rcError": "",
         "remotes": [],
+        # Config sections that are not remotes — see classify_config(). Named so
+        # the panel can have them reaped instead of rendering them as remotes.
+        "configResidue": [],
         "mounts": [],
         "autoMounts": read_automounts(),
         "suppressed": read_suppressed(),
@@ -613,7 +652,7 @@ def main():
 
     client = Rclone(binary, read_env_file(ENV_FILE) if ENV_FILE.exists() else {})
     payload["rcUrl"] = client.url
-    payload["remotes"] = client.config_dump()
+    payload["remotes"], payload["configResidue"] = client.config_dump()
 
     stats = client.rc("core/stats")
     if stats is None:

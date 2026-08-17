@@ -50,6 +50,14 @@ function eq(actual, expected, label) {
   eq(M.parseStatus('{"remotes":"nope"}').remotes, [], "a non-array where an array belongs is replaced")
   eq(M.parseStatus('{"installed":true}').installed, true, "provided values survive")
   eq(M.parseStatus('{"runningJobs":null}').runningJobs, 0, "null falls back to the default")
+  // The reaper iterates this list, so a helper that never sends it (an older
+  // status.py) must still leave an empty array rather than undefined.
+  eq(M.parseStatus('{"installed":true}').configResidue, [],
+     "configResidue defaults to empty")
+  eq(M.parseStatus('{"configResidue":"nope"}').configResidue, [],
+     "a non-array configResidue is replaced")
+  eq(M.parseStatus('{"configResidue":["box"]}').configResidue, ["box"],
+     "a reported residue list survives")
 }
 
 // ---- formatEta -------------------------------------------------------------

@@ -129,6 +129,24 @@ Item {
     forgetRunner.start([pluginDir + "rclone-rc", "forget-config"])
   }
 
+  // Config sections that are not remotes — no `type`, so rclone does not list
+  // them and nothing can mount or repair them. status.py reports them instead of
+  // dressing them up as remotes; clear them here so they stop accumulating.
+  //
+  // Reaped rather than merely hidden because the daemon RE-CREATES them: an
+  // orphaned VFS (left behind by a forced unmount) writes its refreshed OAuth
+  // token back into a section that has been deleted, and rclone obliges by
+  // making the section again. Hiding alone would leave the file growing a new
+  // dead section per removed remote per token refresh.
+  //
+  // Silent: the user removed these remotes already, so there is nothing to
+  // report. `start()` refuses while a run is in flight, so a resurrection that
+  // outpaces the poll cannot stack up reaps.
+  function _reapResidue(names) {
+    if (!names || names.length === 0) return
+    reapRunner.start([pluginDir + "rclone-rc", "reap-residue"])
+  }
+
   function applyStatus(raw) {
     var parsed = Model.parseStatus(raw)
     if (!parsed.ok) {
@@ -156,6 +174,7 @@ Item {
     if (parsed.probed === true) { probes = parsed.probes; _lastProbeMs = Date.now() }
     lastError = ""
     _noteConfigChange(Number(parsed.configMtime || 0))
+    _reapResidue(parsed.configResidue)
     reconcileMounts()
   }
 
@@ -705,6 +724,20 @@ Item {
     id: suppressRunner
     failMessage: "Could not record the switch state"
     onSucceeded: function() { delayedRefresh.restart() }
+    onFailed: function(message) { root.report(message, true) }
+  }
+
+  CommandRunner {
+    id: reapRunner
+    failMessage: "Could not clear leftover config sections"
+    // No success TOAST, and no refresh kick either: deleting the section changes
+    // rclone.conf's mtime, which the next poll already turns into a forget-config
+    // plus a re-probe. Adding one here would run that twice per reap.
+    //
+    // It does go to the journal, though — this edits the user's config without
+    // being asked, so `journalctl --user | grep omarchy-shell` has to be able to
+    // say what was removed and when.
+    onSucceeded: function(output) { console.log("rclone: reaped config residue:", output) }
     onFailed: function(message) { root.report(message, true) }
   }
 
