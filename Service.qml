@@ -102,10 +102,17 @@ Item {
   readonly property bool active: Model.isActive(root)
   readonly property string statusText: Model.statusText(root)
 
-  // Every runner, so a button gated on `busy` is disabled for ALL work and not
-  // just the poll. Omitting the mount and pin runners here previously let a
-  // second click fire while the first was still running.
-  readonly property bool busy: statusRunner.running || probeRunner.running
+  // Every runner that represents a USER ACTION, so a button gated on `busy`
+  // cannot fire twice — omitting the mount and pin runners here once let a second
+  // click through while the first was still running.
+  //
+  // NOT the status poll. That runs every 2s while anything is happening and takes
+  // ~230ms, so including it flipped `busy` on and off about eight times a minute:
+  // the refresh and unmount-all buttons visibly blinked their disabled state
+  // during any activity, for background work the user never asked for and cannot
+  // conflict with. A poll never contends with an action — the runners each refuse
+  // to start while already running — so it has no business disabling anything.
+  readonly property bool busy: probeRunner.running
     || actionRunner.running || mountRunner.running
     || pinRunner.running || createRunner.running || syncRunner.running
 

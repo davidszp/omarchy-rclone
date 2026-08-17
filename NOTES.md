@@ -226,7 +226,15 @@ and anything finishing inside that says nothing at all; the row leaving the list
 the feedback. Errors are never delayed — they persist, so they cannot flicker.
 Bind new status text to `statusLine`.
 
-**16. Emphasis is weight, never colour.** `PanelTheme.urgent` resolves to
+**16. `busy` must not include the status poll.** It once did, and since the poll
+runs every 2s while anything is happening and takes ~230ms, every button gated on
+`!busy` visibly blinked its disabled state throughout an unmount. `busy` means "a
+user action is in flight" — the runners each refuse to start while already running,
+so a poll cannot contend with anything and has no business disabling a control.
+Verified with `omarchy-shell <id> target`, which reports the flag: 10 of 14 samples
+busy before, 0 of 14 after, while an action still holds it for its whole duration.
+
+**17. Emphasis is weight, never colour.** `PanelTheme.urgent` resolves to
 `foreground` on purpose: the theme's real urgent colour is red in dark themes and
 plain foreground in light ones, so the same warning shouted at half the users and
 whispered to the rest. An urgent line sits at full foreground where its neighbours
