@@ -553,7 +553,9 @@ Item {
       suppressRunner.start([pluginDir + "rclone-rc", "unsuppress", "", target0])
     }
     if (!mountRunner.start([pluginDir + "rclone-rc", "mount", String(fs), expandPath(mountPoint)])) return
-    report("Mounting " + fs + "…", false)
+    // The NAME, not the fs: the fs carries the Google Docs option and comes back
+    // from rclone hashed, neither of which means anything to the person reading it.
+    report("Mounting " + Model.remoteNameFromFs(fs) + "…", false)
   }
 
   // `manual` marks a deliberate switch-off, which suppresses auto-remount until

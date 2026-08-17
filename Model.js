@@ -389,6 +389,27 @@ function remoteForFs(remotes, fs) {
   return null
 }
 
+// The REMOTE NAME inside an fs, for showing to a person.
+//
+// An fs is not a name: mounting carries options, so it reads
+// `gdrive,skip_gdocs=true:`, and rclone hands the same mount back as
+// `gdrive{YRXYK}:`. Announcing "Mounting gdrive,skip_gdocs=true:…" showed the
+// user a connection string and an implementation detail of their own toggle.
+//
+// Cuts at the first of `:`, `,` or `{` — the same three characters remoteForFs
+// matches on, because they are exactly what can follow a name in an fs. Needs no
+// remote list, so it works before the panel has one.
+function remoteNameFromFs(fs) {
+  var value = String(fs || "")
+  var cut = value.length
+  var marks = [":", ",", "{"]
+  for (var i = 0; i < marks.length; i++) {
+    var at = value.indexOf(marks[i])
+    if (at >= 0 && at < cut) cut = at
+  }
+  return value.substring(0, cut)
+}
+
 // A transfer's provider: whichever end of it is a configured remote. A download
 // has the remote as source, an upload as destination.
 function transferRemote(row, remotes) {
@@ -639,6 +660,7 @@ if (typeof module !== "undefined") {
     baseName: baseName, tildePath: tildePath, isActive: isActive, statusText: statusText,
     remoteSubtitle: remoteSubtitle, monogramFor: monogramFor,
     mountForRemote: mountForRemote, remoteForFs: remoteForFs,
+    remoteNameFromFs: remoteNameFromFs,
     transferRemote: transferRemote,
     syncModeHelp: syncModeHelp, syncModeDestroys: syncModeDestroys, transferSubtitle: transferSubtitle,
     jobTitle: jobTitle, jobSubtitle: jobSubtitle, shortFs: shortFs,

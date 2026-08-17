@@ -60,6 +60,20 @@ function eq(actual, expected, label) {
      "a reported residue list survives")
 }
 
+// ---- remoteNameFromFs ------------------------------------------------------
+// What the panel SAYS about a mount. An fs is not a name — it carries options and
+// comes back from rclone hashed — so announcing it verbatim showed the user
+// "Mounting gdrive,skip_gdocs=true:…".
+{
+  eq(M.remoteNameFromFs("gdrive,skip_gdocs=true:"), "gdrive", "options are dropped")
+  eq(M.remoteNameFromFs("zoho:"), "zoho", "the trailing colon is dropped")
+  eq(M.remoteNameFromFs("gdrive{YRXYK}:"), "gdrive", "rclone's hashed form is dropped")
+  eq(M.remoteNameFromFs("gdrive:documents/2026"), "gdrive", "a path is dropped")
+  eq(M.remoteNameFromFs("gdrive"), "gdrive", "a bare name is already a name")
+  eq(M.remoteNameFromFs(""), "", "empty stays empty")
+  eq(M.remoteNameFromFs(null), "", "null does not explode")
+}
+
 // ---- formatEta -------------------------------------------------------------
 // rclone sends null for "unknown"; Number(null) is 0, which would render as an
 // instantly-finishing transfer.
