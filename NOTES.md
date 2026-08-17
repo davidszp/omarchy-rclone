@@ -2,11 +2,17 @@
 
 Everything that does not belong in a README: how the pieces fit, what the
 non-obvious decisions were, and the traps that cost time. Written for whoever
-touches this next, including me.
+touches this next.
 
-The short version of every gotcha below: **QML fails silently.** A rule that
-parses is not a rule that matches, a hot reload is not a restart, and a command
-that exits 0 has not necessarily done anything.
+**If you are here to change something,** the sections are in reading order:
+*Architecture* for where things live, *Working on this* for how to test it, then
+*Gotchas* before trusting anything you cannot see fail. The gotchas are not
+trivia — most of them are the reason some piece of code looks the way it does,
+and several describe failures that produce no error at all.
+
+The short version: **QML fails silently.** A rule that parses is not a rule that
+matches, a hot reload is not a restart, and a command that exits 0 has not
+necessarily done anything.
 
 ## Architecture
 
@@ -47,10 +53,11 @@ shell access as the user running rclone". Hence loopback-only *and*
 `--rc-user`/`--rc-pass` with a random password, rather than `--rc-no-auth`. A
 local web page cannot POST to an authenticated endpoint.
 
-`config dump` is read directly from the config file (no daemon needed), and
-only `name` + `type` are copied into the payload (plus an `incomplete` flag
-derived from a missing type) — **never** the OAuth tokens and passwords that
-live in the same blocks.
+`config dump` is read directly from the config file (no daemon needed), and only
+`name` + `type` are copied into the payload, plus an `incomplete` flag for a
+section that has a type and nothing else — **never** the OAuth tokens and
+passwords that live in the same blocks. Sections with no type at all are not
+remotes; see gotcha 12.
 
 ## Two cost tiers
 
@@ -62,6 +69,67 @@ live in the same blocks.
 The two intervals exist because a live transfer wants a moving progress bar
 and an idle daemon wants to be left alone. Polling idle at 2s would spawn a
 subprocess every 2s forever to re-read a number that never changes.
+
+## Working on this
+
+`./check` runs everything below plus syntax, `omarchy plugin validate`, and a
+warning for any `.qml` no other file references. **Run it before committing**; it
+must be green, and it must leave no file behind in this directory (gotcha 10).
+
+| test | needs | covers |
+|---|---|---|
+| `test/model-test.js` | node | all of `Model.js` — pure logic, no QML imports |
+| `test/status-test.py` | python3 | `status.py`'s pure functions (dict in, dict out) |
+| `test/glyph-coverage.py` | python3 | every Nerd Font codepoint the QML draws actually exists |
+| `test/remote-lifecycle-test.sh` | rclone + fusermount3 | add → mount → remove, against its own daemon in a temp `HOME` |
+| `test/panel-test.sh` | a running Omarchy shell | drives the LIVE widget over IPC |
+
+The last two **skip with exit 0** when their dependency is missing, so `check`
+stays runnable on a machine with no session. A skip is not a pass — if you touch
+mounting or removal, run the lifecycle test on a machine that has rclone.
+
+**Put new logic where it can be tested.** `Model.js` imports no QML, which is the
+only reason it is unit-testable; `status.py` keeps its pure transforms as
+module-level functions for the same reason. Anything that shells out or holds QML
+state can only be reached by the last two tests, which are slower and skippable —
+so prefer a pure function called from a thin wrapper.
+
+**`check` cannot see QML errors,** because QML only fails at instantiation. After
+a QML change: `omarchy restart shell`, then open the panel while watching
+`journalctl --user -f | grep omarchy-shell`. Editing an existing function
+hot-reloads on save, but **adding one needs the restart** (gotcha 11), so restart
+by default rather than wondering.
+
+The single most useful smoke test — it exercises widget → service → helper → rc →
+daemon in one call, so a sensible answer means the whole chain is intact:
+
+```bash
+omarchy-shell io.github.davidszp.omarchy-rclone status
+```
+
+Other handles for poking at a live install:
+
+```bash
+systemctl --user status rclone-rcd.service                    # daemon up?
+python3 status.py | python3 -m json.tool                      # the whole payload
+omarchy-shell io.github.davidszp.omarchy-rclone refresh       # force a poll
+omarchy-shell io.github.davidszp.omarchy-rclone setup         # jump into the Drive wizard
+omarchy-shell io.github.davidszp.omarchy-rclone connect box   # start a provider flow
+omarchy-shell io.github.davidszp.omarchy-rclone flowAsks      # what it is asking now
+omarchy-shell io.github.davidszp.omarchy-rclone cancel        # abort it and clean up
+```
+
+Driving the daemon by hand, the way the panel does (so the panel can see it):
+
+```bash
+./rclone-rc mount   "gdrive,skip_gdocs=true:"  ~/GDrive
+./rclone-rc unmount ""                         ~/GDrive
+./rclone-rc pin     "gdrive,skip_gdocs=true:"  ~/GDrive   # restore at login
+./rclone-rc copy    "gdrive:docs"  ~/Documents  dry      # preview; omit dry to run
+./rclone-rc mirror  "gdrive:docs"  ~/Documents  dry      # DELETES at dest
+./rclone-rc remove-remote gdrive                         # unmount, unpin, delete config
+./rclone-rc stop    <jobid>
+```
 
 ## Gotchas found while building this — do not re-derive
 
@@ -82,12 +150,12 @@ daemon runs. **Solved for jobs:** `rclone-rc` labels every copy/mirror with
 totals. **Per-file entries in `transferring[]` were never affected.**
 
 Two traps remain around this counter. `core/stats-reset group=…` does **not**
-clear the daemon-wide numbers — measured: global `errors` stayed at 1 after
-resetting the offending group. And stopping a job on purpose *increments*
-`errors`, so a status line built on it would badge "1 error" forever for
-something the user chose to do. `statusText()` therefore ignores the cumulative
-counter entirely; errors surface per job in JOBS and per file in RECENT, where
-they name the thing that failed and can actually be acted on.
+clear the daemon-wide numbers (measured: global `errors` stayed at 1 after
+resetting the offending group), and stopping a job on purpose *increments*
+`errors` — so a status line built on it badges "1 error" forever for something
+the user chose to do. `statusText()` ignores the cumulative counter entirely;
+errors surface per job in JOBS and per file in RECENT, where they name the thing
+that failed.
 
 **3. The IpcHandler "another handler is registered" warning is not yours.**
 Bar widgets are instantiated once per monitor, so every widget with an
@@ -116,11 +184,10 @@ a hashed form. Matching a mount to its remote therefore cannot use equality or a
 or `{`. Test any change against `gdrivebackup:`, which must NOT match `gdrive`.
 
 **7. Mutating a `property var` array emits no change signal.** `_lines.push(x)`
-on a `property var` leaves every binding that reads it holding the old value.
-This silently emptied the output of *every* command in the plugin — the panel
-reported "rclone is not installed" on a machine where it plainly was, with no
-error anywhere. `CommandRunner` accumulates into a `property string` instead,
-which notifies on assignment and cannot regress the same way. Either reassign
+on a `property var` leaves every binding that reads it holding the old value,
+with no error anywhere — it empties the output of every command that does it.
+`CommandRunner` accumulates into a `property string`, which notifies on
+assignment and cannot regress the same way. Either reassign
 (`arr = arr.concat([x])`) or do not use an array.
 
 **8. A config step with NO question is not the end of the flow.** rclone's
@@ -150,165 +217,139 @@ its own property, not the outer object — Qt reports
 outer object needs a distinct id; here the `PanelTheme` is `id: theme` and rows
 get `ui: theme`. Watch for this whenever a property name matches an id.
 
-**10. This directory is watched — anything that writes here reloads the plugin.**
-`check` originally ran `python3 -m py_compile status.py`, which drops
-`__pycache__/` in place, then deleted it again. That was six file events, six
-`Local plugin changed, reloading` cycles, and — via gotcha 10 — a widget whose
-IPC target answered `Target not found.` afterwards. **Running the test suite
-broke the running widget.** `check` now uses `ast.parse` (writes nothing) and
-carries a comment forbidding artefacts here; `.gitignore` is a backstop, not a
-licence. Verify any new check with:
-`journalctl --user -f | grep "Local plugin changed"` — it must stay silent.
+**10. This directory is watched — anything that writes here reloads the plugin,
+and enough reloads break the running widget** (its IPC target starts answering
+`Target not found.`, per gotcha 11). `python3 -m py_compile` is the trap: it
+drops `__pycache__/` here, so running the test suite used to knock the live
+widget out. Checks must write nothing into this directory — `check` uses
+`ast.parse`, and `.gitignore` is a backstop, not a licence. Verify any new check
+with `journalctl --user -f | grep "Local plugin changed"`; it must stay silent.
 
-**11. Hot-reload does NOT pick up NEW IpcHandler functions.** Editing the body of
-an existing handler reloads fine, but adding a function leaves
-`omarchy-shell io.github.davidszp.omarchy-rclone <new>` answering `Function not found.` indefinitely —
-even after `omarchy-shell shell rescanPlugins`. Cause: with two monitors the
-widget is instantiated twice, only one `IpcHandler` per target wins the
-registration, and reload does not hand the win to the new instance. Fix is
-`omarchy restart shell`. Everything *else* about the plugin genuinely does
-hot-reload, which is what makes this one so easy to misread as "my new function
-is broken".
+Tests that need scratch files put them in a temp dir instead — see
+`test/remote-lifecycle-test.sh`, which runs a whole daemon out of `mktemp -d`.
+
+**11. Hot-reload does NOT pick up NEW QML functions.** Editing the body of an
+existing function reloads fine; *adding* one does not take effect at all, even
+after a logged `Local plugin changed, reloading` and an
+`omarchy-shell shell rescanPlugins`. A new `IpcHandler` function answers
+`Function not found.` indefinitely; a new plain function on `Service` silently
+never runs. Cause: with two monitors the widget is instantiated twice, only one
+instance per target wins registration, and a reload does not hand the win to the
+new one. **Fix is `omarchy restart shell`.** Everything else here genuinely does
+hot-reload, which is what makes this so easy to misread as broken code.
+
+**12. `fusermount3 -u` orphans the daemon's VFS, and an orphaned VFS resurrects
+a deleted remote.** The chain, measured against rclone 1.75:
+
+* `mount/unmount` shuts the VFS down and it leaves `vfs/list`. A forced
+  `fusermount3 -u` removes the *kernel* mount only — the mount disappears from
+  `mount/listmounts` while its VFS stays **active for the lifetime of the
+  daemon**. Nothing in the rc API can shut it down again: `vfs/forget` is the
+  directory cache, `fscache/clear` does not touch active VFSes, and re-mounting
+  then unmounting cleanly only drops the *new* reference. Only restarting
+  `rclone-rcd.service` clears it.
+* An orphan keeps polling, so it keeps refreshing its OAuth token, and rclone
+  writes each refreshed token back into the config file.
+* After the section has been deleted, that write **re-creates the section** —
+  holding a `token` and no `type`.
+
+So: **a config section with no `type` is never a half-made remote.** A real
+abandoned setup keeps its type — `rclone config create <name> <type>` writes the
+section and its `type` in the same write, leaving exactly `[db]` +
+`type = dropbox`, which is what `incomplete` means and what the panel offers to
+remove (finishing one is `rclone-config resume`, CLI only). And
+`config update <name> --continue` refuses a name not already in the file
+(*"couldn't find type field in config"*). A typeless section can therefore only
+be write-back residue. `classify_config()` reports those separately from remotes,
+never shows or probes them, and `rclone-rc reap-residue` deletes them —
+`remove-remote` sweeps after its own delete, and the panel sweeps whenever
+`configResidue` is non-empty.
+
+Reading "no type" as "setup never finished" instead is what produced the zombie
+rows: an undeletable remote per removal, because each delete was undone by the
+next token refresh.
+
+**Fingerprint if it recurs:** `vfs/list` naming a remote that
+`config/listremotes` does not. `systemctl --user restart rclone-rcd.service` is
+the only cure for the orphan itself.
 
 ## Setup flow
 
-**Google Drive is guided in-panel** (`SetupWizard.qml`): the five Google Cloud
-Console steps in order, each with a button that opens the exact console page,
-a copy button for the three Drive scopes, and fields for the client ID and
-secret. It exists because Drive needs an OAuth client of your own —
-rclone's built-in credentials are **being retired during 2026** and are capped
-at Google's shared 10 requests/second.
-
-The step the wizard shouts about is **publish the app**. Left in Testing mode,
-every grant expires after 7 days and Drive quietly stops working a week later
-— the single most common way this setup rots.
+**Google Drive is the one provider with a hand-written wizard**
+(`SetupWizard.qml`), because ~10 minutes of its setup happens in Google's console
+where rclone cannot reach: it needs an OAuth client of your own, rclone's
+built-in credentials being retired during 2026. Two details in it are load-bearing
+rather than decorative — the **publish-the-app** warning (left in Testing mode,
+Google expires every grant after 7 days, so Drive stops working a week later),
+and the copy button for the three scopes.
 
 Pressing Connect runs `rclone config create <name> drive client_id=… scope=drive`
 and lets rclone drive its own OAuth handshake. **The client secret goes over
-stdin, not this plugin's argv** — argv is world-readable through `ps`, stdin is not. This
-copies the first-party Wi-Fi panel's handling of enterprise passphrases
-(`plugins/panels/network/Panel.qml`, `stdinEnabled: true`). If rclone prints the
-auth URL rather than opening a browser, `openAuthUrlFrom()` opens it — the same
-fallback the Dropbox plugin uses.
+stdin, never argv** — argv is world-readable through `ps`; this follows the
+first-party Wi-Fi panel (`plugins/panels/network/Panel.qml`, `stdinEnabled: true`).
+Keep that property in anything new that handles a credential. If rclone prints
+the auth URL instead of opening a browser, `openAuthUrlFrom()` opens it.
 
-Other providers still go to `rclone config` in a floating terminal. Generalising
-the wizard means driving `config/create`'s `opt.state`/`opt.result` state machine
-and generating forms from `config/providers` for ~70 backends — that is what
-rclone's own web GUI does, and it is a project, not a widget.
+Every other provider is set up **inside the panel**, with no per-provider code —
+see "Connecting other providers" below. `rclone config` in a floating terminal
+remains in the grid as the escape hatch for the backends the grid does not list.
 
 ## Provider icons
 
-`ProviderIcon.qml`, three tiers in order of preference:
+`ProviderIcon.qml`, three tiers: a **drawn mark** where the shape is worth
+drawing (box, s3/b2, sftp/ftp/webdav, crypt, local), a **font glyph** where the
+Nerd Font has a good distinct one (Drive, Dropbox, OneDrive), otherwise a
+**monogram badge** of the type's initial.
 
-1. a **drawn mark** for types with a shape worth drawing — box (isometric
-   cube), s3/b2 (bucket), sftp/ftp/webdav (server bars), crypt (padlock),
-   local (folder)
-2. a **font glyph** where the Nerd Font already has a good, distinct one —
-   Google Drive, Dropbox, OneDrive
-3. a **monogram badge**, the type's initial in a rounded square
+Adding a provider therefore needs no art. **Do not replace this with a fixed
+glyph table:** rclone supports 69 backends and Nerd Fonts has brand icons for a
+handful, so every such table ends up mapping `box`, `s3`, `pcloud` and `zoho` to
+the same default cloud — an icon that is actively wrong rather than vague. Marks
+are drawn with `Shape`/`ShapePath` rather than shipped as SVGs, which is the
+house pattern (so does the first-party Dropbox plugin) and inherits the theme
+colour for free.
 
-Tier 3 is the point. The previous mapping was a font-glyph lookup that gave
-`box`, `s3`, `pcloud` and `zoho` the **same default cloud** — an icon that is
-actively wrong rather than merely vague. Nerd Fonts has brand icons for a
-handful of services and rclone supports 69, so any fixed table has this failure
-built in. A monogram is never wrong and never needs new art.
+## RECENT rows
 
-Drawn rather than shipped as SVG assets because that is the house pattern — the
-first-party Dropbox plugin draws its own logo with `Shape`/`ShapePath` — and a
-drawn mark inherits the theme colour for free.
+Each row names its provider (`107 B · gdrive`), because a filename alone does not
+say where it came from. A **name, not an icon** — rows are one line each, and a
+name is read without a legend; icons stay in REMOTES where the name sits beside
+them.
 
-## Naming the provider in RECENT
+Two constraints if you touch `transferred_rows` or `transferRemote()`:
 
-With more than one remote configured, a filename alone does not say where it
-came from, so each RECENT row names its provider: `107 B · gdrive`.
-
-**A name, not an icon.** Even with `ProviderIcon` (below) an icon is the wrong
-instrument in a dense list — RECENT rows are one line each and a name is read
-at a glance without a legend. Icons stay in REMOTES, where the name sits beside
-them and teaches the vocabulary.
-
-The provider is derived with `transferRemote()`, which resolves `srcFs` (a
-download) or `dstFs` (an upload) against the configured remotes using the same
-prefix rule as `mountForRemote` — it must handle both `gdrive:documents` and the
-hashed `gdrive{YRXYK}:` that a mount reports.
-
-**This also fixed RECENT lying.** rclone reports checks and bisync listings
-through `core/transferred` alongside real transfers — measured: 14 of 77 entries
-were `what: "checking"` or `"listing file - Path1"`. They were being shown as if
-files had moved. `transferred_rows` now keeps only `what == "transferring"`,
-which is also exactly the set that carries an `srcFs`, so every surviving row
-can name its provider.
-
-## Verify
-
-```bash
-systemctl --user status rclone-rcd.service         # daemon up?
-python3 ~/.config/omarchy/plugins/io.github.davidszp.omarchy-rclone/status.py | python3 -m json.tool
-omarchy-shell io.github.davidszp.omarchy-rclone status                  # what the LIVE widget thinks
-omarchy-shell io.github.davidszp.omarchy-rclone refresh                 # force a poll
-omarchy-shell io.github.davidszp.omarchy-rclone setup                   # jump into the Drive wizard
-journalctl --user --since "5 min ago" | grep omarchy-shell   # QML errors
-```
-
-Mount a remote on demand (through the daemon, so the panel can see it):
-
-```bash
-./rclone-rc mount   "gdrive,skip_gdocs=true:"  ~/GDrive
-./rclone-rc unmount ""                         ~/GDrive
-./rclone-rc pin     "gdrive,skip_gdocs=true:"  ~/GDrive   # restore at login
-./rclone-rc unpin   ""                         ~/GDrive
-./rclone-rc copy    "gdrive:docs"  ~/Documents           # additive
-./rclone-rc copy    "gdrive:docs"  ~/Documents  dry      # preview only
-./rclone-rc mirror  "gdrive:docs"  ~/Documents  dry      # DELETES at dest
-./rclone-rc stop    <jobid>
-```
-
-Before committing anything:
-
-```bash
-./check      # tests, syntax, manifest, orphaned components
-```
-
-`check` cannot see QML errors — QML only fails at instantiation. After a QML
-change also run `omarchy restart shell`, then open the panel while watching
-`journalctl --user -f | grep omarchy-shell`.
-
-`omarchy-shell io.github.davidszp.omarchy-rclone status` is the check that matters: it returns
-`Model.statusText()` computed from a real parsed payload, so a sensible answer
-proves the whole chain — widget → service → helper → rc → daemon.
-
-Saving any file here hot-reloads the plugin; no restart needed.
+- The provider is resolved from `srcFs` (download) or `dstFs` (upload) with the
+  same prefix rule as `mountForRemote`, so it must handle both `gdrive:documents`
+  and the hashed `gdrive{YRXYK}:` a mount reports (gotcha 6).
+- **Only `what == "transferring"` may be listed.** rclone reports checks and
+  bisync listings through `core/transferred` too (measured: 14 of 77 entries were
+  `"checking"` or `"listing file - Path1"`), and showing those claims files moved
+  when nothing did. It is also exactly the set that carries an `srcFs`.
 
 ## Moving a mount
 
-The move button on a mounted remote opens the same form prefilled with the
-**current** folder. It is one action, and the login pin moves with it.
+rclone cannot relocate a live FUSE mount, so moving one is really unmount +
+mount. `rclone-rc remount` does the pair **in one process**, and `repin` rewrites
+the pin file in a single atomic write — otherwise there is a window where the pin
+names a folder that no longer exists.
 
-rclone cannot relocate a live FUSE mount, so underneath this really is unmount +
-mount — the point is that you do not have to do those three steps (unmount,
-mount elsewhere, re-pin) yourself, with a window in between where the pin still
-names a folder that no longer exists. `rclone-rc remount` does the pair in one
-process and `repin` rewrites the pin file in a single atomic write.
-
-Two things it must not do, both learned the hard way:
+Two things it must not do:
 
 - **It reuses the live mount's own fs** (e.g. `gdrive{YRXYK}:`) rather than
   recomposing one from the form. The Google Docs switch is hidden while moving,
   so recomposing could silently change a mount's options with nothing on screen
   to show it.
 - **It verifies the unmount instead of trusting it.** `mount/unmount` returned
-  `{}` — success — while the mountpoint stayed live; the follow-up mount then
-  produced *two* mounts of the same remote. `unmount_verified()` now checks
-  `mountpoint -q`, falls back to `fusermount3 -u`, and aborts the move rather
-  than mounting a second copy. The plain unmount path uses it too.
+  `{}` — success — while the mountpoint stayed live, and the follow-up mount then
+  produced *two* mounts of the same remote. `unmount_verified()` checks
+  `mountpoint -q`, retries, and aborts the move rather than mounting a second
+  copy. The plain unmount path uses it too.
 
-  **It is not reproducible.** 19 controlled trials across four hypotheses, all
-  clean: recent read before unmounting (6), two mounts of one fs (3), a
-  connection-string mount reported back hashed as `utest{12rtk}:` (4), and a
-  network backend with an active VFS cache (3, on Box), plus the local-backend
-  baseline. So the defence stands on the single observation, and the cause is
-  unknown. If it recurs, the useful detail to capture is what else was touching
-  that mountpoint at the time — every hypothesis about rclone itself failed.
+  Do not simplify this away as paranoia: it rests on one real observation that
+  19 controlled trials could not reproduce (repeat reads, double mounts, hashed
+  connection strings, a network backend with a live VFS cache), so the cause is
+  still unknown. Every hypothesis about rclone itself failed — if it recurs, the
+  detail worth capturing is what else was touching that mountpoint.
 
 ## Unsynced writes
 
@@ -326,22 +367,15 @@ $ rclone-rc unmount "" ~/Busy
 exit 2                        # mount still live, nothing lost
 ```
 
-`force` as the last argument overrides it. Moving refuses the same way and
-leaves nothing half-done — no stub directory, original still mounted.
+`force` as the last argument overrides it. Moving refuses the same way and leaves
+nothing half-done — no stub directory, original still mounted. In the panel the
+row's subtitle turns urgent (`· N not uploaded yet`) only while it is true; a
+badge that is always there stops being read.
 
-The panel shows this **only while it is true**: the row's subtitle turns urgent
-and reads `· N not uploaded yet`, with a warning glyph beside the actions. A
-badge that is always present stops being read, so it appears when there is
-something to lose and is invisible otherwise.
-
-The count comes from `status.py --pending <mountpoint>`, which reuses the same
-code path as the panel. An earlier version re-implemented the lookup in bash and
-silently returned 0 behind a `|| echo 0` fallback, so the guard never fired —
-one implementation, used by both.
-
-Moving is refused when the path is unchanged, so the button cannot trigger a
-pointless unmount/remount cycle. Anything holding a file open under the old path
-sees it disappear, exactly as a manual unmount would.
+The count comes from `status.py --pending <mountpoint>` — one implementation, used
+by both the guard and the panel. **Do not re-implement it in bash:** behind the
+`|| echo 0` fallback a shell version needs, any mistake reads as "nothing
+pending" and the guard silently never fires.
 
 ## Automatic mounts
 
@@ -351,16 +385,14 @@ Login mounts are declared in `~/.config/rclone/omarchy-automounts.json`:
 [ { "fs": "gdrive,skip_gdocs=true:", "mountPoint": "/home/you/GDrive" } ]
 ```
 
-Pressing mount on an unmounted remote opens an **inline form under that row** —
-mount path (prefilled `~/<remote>`), a "mount at login" toggle, and, for `drive`
-remotes only, a "hide Google Docs" toggle. It composes the connection string and
-mounts, pinning in the same action if asked. Inline rather than a second popup:
-a popup inside a popup is easy to lose at this width, and the form belongs
-visually to the row that spawned it.
+Pressing mount opens an inline form under that row (path, "mount at login", and
+"hide Google Docs" for `drive` only), composes the connection string, and pins in
+the same action if asked. Inline rather than a nested popup, which is easy to lose
+at this width.
 
-Any open form takes the keyboard — otherwise `r`/`c`/`a` would be swallowed as
-panel shortcuts while typing a path — and Escape unwinds one layer at a time
-(form → wizard → panel).
+**Any open form takes the keyboard**, or `r`/`c`/`a` get swallowed as panel
+shortcuts while typing a path, and Escape unwinds one layer at a time
+(form → wizard → panel). Keep both properties in any new input.
 
 The pin button on an already-mounted remote writes the entry directly
 (`rclone-rc pin|unpin`, atomic write). `Service.reconcileMounts()` then
@@ -376,51 +408,29 @@ remote cannot stall the rest.
 
 ## Connecting other providers
 
-Drive has a wizard because ~10 minutes of its setup happens in Google's console,
-where rclone cannot reach. **Every other OAuth backend needs no such guidance** —
-their docs say "leave blank normally", so rclone can drive the whole thing.
+Everything except Drive is set up in-panel with **no per-provider code**, on one
+of two paths. Adding a provider means adding a row to `PROVIDERS` in `Model.js`
+and nothing else; if it needs a value rclone never asks for, give it a `seed`
+(zoho refuses to start without `region`).
 
-The panel does drive it, via `rclone-config` + `ProviderFlow.qml`. There is no
-per-provider code: rclone returns a question with `Help`, a `Default`, optional
-`Examples` and a `Required` flag, and the panel renders that. Connecting Box
-shows rclone's own wording and a Yes/No pair built from its Examples.
+| path | for | how |
+|---|---|---|
+| `rclone-config` + `ProviderFlow.qml` | OAuth backends | steps rclone's config state machine; it returns a question with `Help`, `Default`, `Examples` and `Required`, and the panel renders that |
+| `BackendForm.qml` | backends with no interactive setup (`form: true`) | generates a form from `config/providers`, passes the answers as seeds to one `config create` |
 
-**What actually needed the loop.** Not the browser handshake — a one-shot
-`config create` already opens the browser (that is how Drive works here). It is
-the step *after* authenticating: OneDrive's state is `*oauth-islocal,choose_type,,`,
-meaning it still has to ask which drive, fetched live from the API. Answering
-that silently would connect you to the wrong drive with no indication.
+Measured: `s3`, `b2`, `webdav`, `sftp` and `crypt` all return done on the first
+call, so **only OAuth flows ever walk the state machine**. Two traps in the
+generated form: rclone's `Required` flag is not the whole story (s3 marks nothing
+required, because it depends on which provider you pick — so the form leads with
+the first few fields when a backend declares none), and password fields need no
+special handling because `config create --non-interactive` obscures them itself.
 
-Non-OAuth backends never enter the machine at all — measured: `s3`, `b2`,
-`webdav`, `sftp`, `crypt` all return done on the first call, because their
-options are ordinary key=values. So the loop is only ever walked by OAuth flows.
+**Where help is most useful:** the post-auth branch is covered by a fixture, not
+an account. `test/fixtures/onedrive-like.json` walks islocal → type → org picker →
+drive id → secret through the real widget, which proves our half. That rclone's
+actual `choose_type` output matches the fixture's shape is **unverified** — only
+a real OneDrive account settles it. Box is the one flow confirmed end to end
+against a live account.
 
-Those backends are reached the OTHER way: `BackendForm.qml` renders a form from
-`config/providers` (all 69 backends, each option flagged Required/Advanced/
-IsPassword) and passes every answer as a seed to a single `config create`. S3,
-B2, SFTP, WebDAV and FTP are in the grid on that path. Two traps found building
-it: rclone's `Required` flag is not the whole story — s3 marks nothing required
-because it depends on which provider you pick, so the form leads with the first
-few fields when a backend declares none — and password fields need no special
-handling, because `config create --non-interactive` obscures them itself
-(verified by revealing a stored value).
-
-**Verified with a real account, 2026-08-15:** Box connected entirely from the
-panel — rclone's built-in client_id, no console work, no terminal. The resulting
-remote lists real folders and probes to `586.1 MB used of 53.7 GB`. Also stepped
-Drive's machine with no authentication (`client_id_warning → client_id_set →
-client_secret_set`), and cancelled a flow midway to confirm no partial remote is
-left behind.
-
-**The post-auth branch** is now covered by a fixture rather than a live account:
-`test/fixtures/onedrive-like.json` walks islocal → type → org picker → drive id →
-secret through the real widget in `test/panel-test.sh`. That proves OUR half.
-What stays unverified is that rclone's actual `choose_type` output matches the
-fixture's shape — only a real OneDrive account settles that.
-
-```bash
-omarchy-shell io.github.davidszp.omarchy-rclone connect box    # start a flow by backend type
-omarchy-shell io.github.davidszp.omarchy-rclone flowAsks       # what it is currently asking
-omarchy-shell io.github.davidszp.omarchy-rclone cancel         # abort and clean up
-```
+Step a flow by hand with the `connect` / `flowAsks` / `cancel` handles above.
 

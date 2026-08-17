@@ -71,12 +71,16 @@ something is transferring (2s).
 ```
 
 That covers the pure logic, the Python helper, shell syntax, the manifest, and
-that every icon exists in the font. It also drives the *live* panel over IPC,
-which is the only way to test QML that imports Omarchy's own components.
+that every icon exists in the font. It also runs the add → mount → remove
+lifecycle against a throwaway rclone daemon, and drives the *live* panel over
+IPC — the only way to test QML that imports Omarchy's own components. The last
+two skip themselves when there is no rclone or no running shell.
 
 One rule worth repeating: **after changing a `.qml` file, restart the shell
-before believing anything.** Hot reload silently keeps the old component often
-enough that I've been fooled twice.
+before believing anything.** Saving hot-reloads the plugin and that covers edits
+to existing code, but a newly *added* function does not take effect until
+`omarchy restart shell` — with no error to tell you which case you are in
+(NOTES.md, gotcha 11).
 
 `status.py` is the only thing that talks to rclone. `Model.js` is pure logic
 with no QML imports, which is why it can be unit tested. Everything else is a
