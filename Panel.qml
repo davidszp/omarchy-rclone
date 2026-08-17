@@ -23,6 +23,10 @@ Panel {
   property bool cursorActive: false
   property bool setupOpen: false
 
+  // The last thing the status area said. Held after statusLine clears so the fade
+  // out is a fade of the words, not of an empty string.
+  property string flashText: ""
+
   // Readable by PanelIpc; the wizard itself lives deep in the layout.
   readonly property bool setupWizardDirty: setupWizard.dirty
   // Remote name whose inline "mount as…" form is open; "" means none.
@@ -428,6 +432,9 @@ Panel {
   // rather than choosing a path silently or leaving the job half done.
   Connections {
     target: rclone
+    function onStatusLineChanged() {
+      if (rclone.statusLine !== "") root.flashText = rclone.statusLine
+    }
     function onRemoteCreated(name) {
       root.open()
       // The credentials are safely in rclone.conf now, so drop this copy of
@@ -661,15 +668,6 @@ Panel {
             }
           }
 
-          Text {
-            visible: rclone.statusLine !== ""
-            width: parent.width
-            text: rclone.statusLine
-            color: rclone.lastError !== "" && rclone.actionStatus === "" ? theme.urgent : theme.dim
-            font.family: theme.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
-          }
 
           DaemonNotice {
             width: parent.width
@@ -763,9 +761,38 @@ Panel {
                 fontFamily: theme.fontFamily
               }
 
+              // THE STATUS AREA. Deliberately here, in the empty middle of a row
+              // that already exists at a FIXED height, rather than as its own row
+              // in the column: a row that appears and disappears pushes the whole
+              // panel down and lets it spring back, which is what every other
+              // Omarchy panel does and what made this one feel unstable.
+              //
+              // Fades rather than blinks, and keeps the last message while fading
+              // out — binding `text` straight to statusLine would blank it the
+              // instant it cleared and there would be nothing left to fade.
+              Text {
+                anchors.left: remotesHeader.right
+                anchors.leftMargin: Style.space(4)
+                anchors.right: probeButton.left
+                anchors.rightMargin: Style.space(2)
+                anchors.verticalCenter: parent.verticalCenter
+                horizontalAlignment: Text.AlignRight
+                text: root.flashText
+                // Errors at full strength, transient notes dim. No colour: see
+                // PanelTheme.
+                color: rclone.lastError !== "" && rclone.actionStatus === ""
+                  ? theme.foreground : theme.dim
+                font.family: theme.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+                opacity: rclone.statusLine !== "" ? 1.0 : 0.0
+                Behavior on opacity { NumberAnimation { duration: 350; easing.type: Easing.OutQuad } }
+              }
+
               // Probing is a network round-trip per remote, so it is a button
               // the user presses, never something a timer does.
               PanelActionButton {
+                id: probeButton
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 iconText: "󰑐"

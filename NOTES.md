@@ -243,19 +243,32 @@ an action until the next poll lands, and **the order in `statusRunner.onSucceede
 matters** — apply the payload first, clear the flag second, or bindings re-evaluate
 against stale state and the blink comes back from the fix itself.
 
-**The status row is the house pattern, and it shifts the layout.** A `visible:`
-toggled Text inside the column — the first-party Dropbox and Tailscale panels do
-exactly the same, so every Omarchy panel pushes its content down when it has
-something to say. Diverging (reserving the row, or floating it) would make this
-panel behave unlike the rest of the desktop, so instead **only work the user asked
-for is allowed to speak**: `probe(false)` for the automatic probe on panel open and
-after a config edit, and nothing at all for mount/unmount. Errors always speak.
+**The status area is in the REMOTES header, and that is the whole point.** It used
+to be its own `visible:`-toggled Text in the column — which is the house pattern,
+the first-party Dropbox and Tailscale panels do the same — so every message pushed
+the entire panel down and let it spring back. It now lives in the empty middle of
+the REMOTES header row, which exists at a FIXED height, so a message cannot move
+anything. It fades in and out (350ms) rather than blinking, holds ~3.5s
+(`actionStatusTimer`), and elides rather than wraps.
+
+Three consequences worth knowing before changing it:
+
+- `flashText` in Panel.qml holds the last message so the fade-OUT has words to
+  fade. Binding `text` straight to `statusLine` blanks it the instant it clears.
+- Runners must NOT clear `actionStatus` on success. They used to, so a fast action
+  flashed its message for a few hundred ms — unreadable. The timer owns the
+  lifetime now; a message may outlive the action that raised it, which is correct
+  for a status area that fades.
+- The hold-back before a message appears is 250ms, not 700ms. It was 700 only
+  because showing a message resized the panel, so the cheapest fix was to say
+  nothing at all for anything fast. Showing costs nothing now.
 
 Errors also get a floor: `applyStatus` used to clear `lastError` on every
 successful poll, and a poll lands 1.2s after any action, so a failed mount was
 erased about a second after appearing. `errorMinMs` keeps it up for 8s.
 
-Mount and unmount also **say nothing** in the status line. Announcing them grew the
+The automatic probe (panel open, and after a config edit) stays silent —
+`probe(false)`. It starts on its own, so it is noise wherever it is drawn. Announcing them grew the
 panel by a row and finishing shrank it, and because the message is delayed ~700ms
 it only appeared when the action happened to be slow — which made the jump look
 random. The row appearing or leaving the list is better feedback than the word.

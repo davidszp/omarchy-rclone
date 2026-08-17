@@ -553,12 +553,7 @@ Item {
       suppressRunner.start([pluginDir + "rclone-rc", "unsuppress", "", target0])
     }
     if (!mountRunner.start([pluginDir + "rclone-rc", "mount", String(fs), expandPath(mountPoint)])) return
-    // Says nothing on purpose. The status line is a ROW, so announcing this grows
-    // the panel and finishing shrinks it — the list visibly jumped down and back,
-    // and only when the mount happened to take longer than the message's delay,
-    // which made it look random. The row appearing in MOUNTS is the feedback, and
-    // it is better feedback than the word. Failures still report: they persist,
-    // and there is nothing else to see.
+    report("Mounting " + fs + "…", false)
   }
 
   // `manual` marks a deliberate switch-off, which suppresses auto-remount until
@@ -576,7 +571,7 @@ Item {
     if (force === true) argv.push("force")
     if (!mountRunner.start(argv)) return
     if (manual) suppressRunner.start([pluginDir + "rclone-rc", "suppress", "", target])
-    // Silent for the same reason as mountPath: the row leaving the list says it.
+    report("Unmounting…", false)
   }
 
   // Move a live mount to a different folder.
@@ -800,7 +795,9 @@ Item {
 
   Timer {
     id: actionStatusTimer
-    interval: 2600
+    // ~3.5s: long enough to read a short sentence, short enough that the panel is
+    // not still explaining an action you have moved on from.
+    interval: 3500
     onTriggered: root.actionStatus = ""
   }
 
@@ -809,7 +806,11 @@ Item {
   // explains itself.
   Timer {
     id: actionStatusDelay
-    interval: 700
+    // Short now that the status area is a fixed-height slot in the REMOTES header
+    // and cannot move anything: showing a message costs nothing, so only genuine
+    // sub-blink noise is worth filtering. It was 700ms when a message resized the
+    // panel and the cheapest fix was to say nothing at all for fast actions.
+    interval: 250
     onTriggered: root._actionStatusDue = true
   }
 
@@ -838,7 +839,10 @@ Item {
     onSucceeded: function(output) {
       root.probing = false
       root.applyStatus(output)
-      root.actionStatus = ""
+      // NOT cleared here. The status area is a fixed-height slot that fades, so a
+      // message may outlive the action that raised it — actionStatusTimer expires
+      // it after ~3.5s. Clearing on success meant a fast action flashed its
+      // message for a few hundred ms and vanished, which is unreadable.
     }
     onFailed: function(message) {
       root.probing = false
@@ -857,7 +861,10 @@ Item {
                          root._remountFs, root._remountNew, root._remountOld])
       }
       root._remountFs = ""
-      root.actionStatus = ""
+      // NOT cleared here. The status area is a fixed-height slot that fades, so a
+      // message may outlive the action that raised it — actionStatusTimer expires
+      // it after ~3.5s. Clearing on success meant a fast action flashed its
+      // message for a few hundred ms and vanished, which is unreadable.
       root._settleAfterAction()
     }
     onFailed: function(message) {
@@ -882,7 +889,7 @@ Item {
   CommandRunner {
     id: syncRunner
     failMessage: "Job command failed"
-    onSucceeded: function() { root.actionStatus = ""; root._settleAfterAction() }
+    onSucceeded: function() { root._settleAfterAction() }
     onFailed: function(message) { root.report(message, true); root._settleAfterAction() }
   }
 
@@ -920,7 +927,7 @@ Item {
   CommandRunner {
     id: actionRunner
     failMessage: "Command failed"
-    onSucceeded: function() { root.actionStatus = ""; root._settleAfterAction() }
+    onSucceeded: function() { root._settleAfterAction() }
     onFailed: function(message) { root.report(message, true); root._settleAfterAction() }
   }
 
