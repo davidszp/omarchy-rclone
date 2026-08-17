@@ -34,12 +34,24 @@ import base64
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
+import http.client
+import socket
 from pathlib import Path
 
 ENV_FILE = Path.home() / ".config" / "rclone" / "rcd.env"
-DEFAULT_ADDR = "127.0.0.1:5572"
+
+# A UNIX SOCKET under $XDG_RUNTIME_DIR, not a TCP port. /run/user/<uid> is mode
+# 0700, so the socket is unreachable by any other user on the machine — the
+# filesystem does the access control. A loopback port is different: it is not
+# uid-restricted, so every local user can connect to it and attempt auth, and
+# only the password stands in the way. Nothing can be sniffed either way without
+# CAP_NET_RAW, but this removes the door rather than locking it.
+#
+# A TCP address in rcd.env still works; installs made before this keep running
+# until setup-daemon.sh migrates them.
+DEFAULT_SOCKET = "unix://%s/rclone-rcd.sock" % (
+    os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid())
+DEFAULT_ADDR = DEFAULT_SOCKET
 DEFAULT_TIMEOUT = 4
 
 
@@ -59,9 +71,47 @@ def read_env(path=ENV_FILE):
     return values
 
 
+def address_of(env):
+    """-> ("unix", path) or ("tcp", host, port). rclone's own --rc-addr syntax."""
+    addr = env.get("RCLONE_RC_ADDR", DEFAULT_ADDR).strip()
+    for scheme in ("unix://", "http://", "https://"):
+        if addr.startswith(scheme):
+            rest = addr[len(scheme):]
+            if scheme == "unix://":
+                return ("unix", "/" + rest.lstrip("/"))
+            addr = rest.rstrip("/")
+            break
+    host, _, port = addr.rpartition(":")
+    return ("tcp", host or "127.0.0.1", int(port or 5572))
+
+
 def url_for(env):
-    addr = env.get("RCLONE_RC_ADDR", DEFAULT_ADDR)
-    return addr if addr.startswith("http") else "http://%s/" % addr
+    """A human-readable address for the panel to show."""
+    target = address_of(env)
+    return target[1] if target[0] == "unix" else "http://%s:%d/" % (target[1], target[2])
+
+
+class _UnixConnection(http.client.HTTPConnection):
+    """HTTPConnection over an AF_UNIX socket. http.client speaks HTTP down any
+    stream, so only connect() has to change — and urllib cannot do this at all,
+    which is why the transport moved off it."""
+
+    def __init__(self, path, timeout=DEFAULT_TIMEOUT):
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self.timeout:
+            self.sock.settimeout(self.timeout)
+        self.sock.connect(self._path)
+
+
+def _connect(env, timeout):
+    target = address_of(env)
+    if target[0] == "unix":
+        return _UnixConnection(target[1], timeout=timeout)
+    return http.client.HTTPConnection(target[1], target[2], timeout=timeout)
 
 
 # Keys whose value must never appear in a message. Same list as rclone-config's,
@@ -114,48 +164,49 @@ def call(method, params=None, timeout=DEFAULT_TIMEOUT, env=None):
     `rclone rc` CLI would have sent.
     """
     env = read_env() if env is None else env
-    request = urllib.request.Request(
-        url_for(env).rstrip("/") + "/" + method.lstrip("/"),
-        data=json.dumps(params or {}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
+    headers = {"Content-Type": "application/json"}
     user = env.get("RCLONE_RC_USER", "")
     if user:
+        # Kept even on a unix socket, where the directory mode already keeps other
+        # users out: two independent barriers, and it costs one header.
         token = "%s:%s" % (user, env.get("RCLONE_RC_PASS", ""))
-        request.add_header(
-            "Authorization",
-            "Basic " + base64.b64encode(token.encode("utf-8")).decode("ascii"),
-        )
+        headers["Authorization"] = (
+            "Basic " + base64.b64encode(token.encode("utf-8")).decode("ascii"))
+
+    connection = _connect(env, timeout)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        # rclone answers a failed method with 500 and a JSON body carrying the
-        # real message; without reading it every failure reads as "HTTP Error
-        # 500", which says nothing about what went wrong.
-        #
+        connection.request("POST", "/" + method.lstrip("/"),
+                           body=json.dumps(params or {}).encode("utf-8"),
+                           headers=headers)
+        response = connection.getresponse()
+        status = response.status
+        body = response.read().decode("utf-8", "replace")
+    except (ConnectionRefusedError, FileNotFoundError):
+        # No listener, or the socket file is not there — the same condition, and
+        # the same sentence the CLI path used to produce, so the panel's handling
+        # of "the daemon is down" is unchanged.
+        return None, "rclone rcd is not running"
+    except (socket.timeout, TimeoutError):
+        return None, "rclone rcd did not answer in %ss" % timeout
+    except OSError as exc:
+        return None, _scrub(str(exc), params)[:200]
+    finally:
+        connection.close()
+
+    if status >= 400:
         # ONLY the `error` field, and NEVER the raw body: the body also contains
         # `input`, which is the request echoed back verbatim — passwords and all.
-        detail = exc.read().decode("utf-8", "replace")
         message = ""
         try:
-            parsed = json.loads(detail)
+            parsed = json.loads(body)
             if isinstance(parsed, dict):
                 message = str(parsed.get("error") or "")
         except ValueError:
             message = ""
         if not message:
-            message = "rc call %s failed (HTTP %s)" % (method, exc.code)
+            message = "rc call %s failed (HTTP %s)" % (method, status)
         return None, _scrub(message, params)[:200]
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        # Same sentence the old CLI path produced, so the panel's handling of
-        # "daemon is not running" does not change.
-        if isinstance(reason, ConnectionRefusedError) or "refused" in str(reason).lower():
-            return None, "rclone rcd is not running"
-        return None, str(reason)[:200]
-    except OSError as exc:
-        return None, str(exc)[:200]
+
     try:
         return (json.loads(body) if body.strip() else {}), ""
     except json.JSONDecodeError:

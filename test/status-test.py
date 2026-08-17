@@ -328,6 +328,23 @@ eq(sorted(rcclient._sensitive_values(
 eq(rcclient._scrub("value ab", {"parameters": {"pass": "ab"}}), "value ab",
    "a very short value is not redacted — it would mangle unrelated text")
 
+# ---- rcclient: address parsing ---------------------------------------------
+# The daemon listens on a unix socket under $XDG_RUNTIME_DIR (mode 0700), so no
+# other user can reach it at all. A loopback address must keep working: installs
+# made before that change carry one in rcd.env until setup-daemon.sh migrates
+# them, and a user may have set one deliberately.
+eq(rcclient.address_of({"RCLONE_RC_ADDR": "unix:///run/user/1000/rclone-rcd.sock"}),
+   ("unix", "/run/user/1000/rclone-rcd.sock"), "a unix address parses to its path")
+eq(rcclient.address_of({"RCLONE_RC_ADDR": "127.0.0.1:5572"}),
+   ("tcp", "127.0.0.1", 5572), "a bare host:port still parses")
+eq(rcclient.address_of({"RCLONE_RC_ADDR": "http://127.0.0.1:5572/"}),
+   ("tcp", "127.0.0.1", 5572), "so does an http:// url")
+eq(rcclient.address_of({})[0], "unix", "the default is a socket, not a port")
+eq(rcclient.url_for({"RCLONE_RC_ADDR": "unix:///tmp/x.sock"}), "/tmp/x.sock",
+   "the displayed address is the socket path")
+eq(rcclient.url_for({"RCLONE_RC_ADDR": "127.0.0.1:5572"}), "http://127.0.0.1:5572/",
+   "and a url for a port")
+
 # ---- classify_config -------------------------------------------------------
 # THE ZOMBIE-REMOTE REGRESSION. A section with no `type` used to be reported as
 # a half-finished remote, so the panel listed it, labelled it "setup never

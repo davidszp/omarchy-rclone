@@ -23,7 +23,7 @@ The alternative — a separate `rclone mount` per remote, each with its own
 `mount/mount` with `_async=true`) and they all show up in one place.
 
 ```
-Panel.qml → Service.qml → status.py → rcclient.py → HTTP → rclone rcd (127.0.0.1:5572)
+Panel.qml → Service.qml → status.py → rcclient.py → HTTP over a unix socket → rclone rcd
 ```
 
 Where things live. `Panel.qml` owns layout and the keyboard cursor and nothing
@@ -50,6 +50,16 @@ The daemon runs as `~/.config/systemd/user/rclone-rcd.service`, with its bind
 address and credentials in `~/.config/rclone/rcd.env` (0600), shared with
 `status.py`. rclone maps every `--rc-*` flag to a `RCLONE_RC_*` env var, so
 the unit needs no flags beyond `EnvironmentFile`.
+
+It listens on a **unix socket** at `$XDG_RUNTIME_DIR/rclone-rcd.sock`, not a
+loopback port. `/run/user/<uid>` is mode 0700, so the filesystem keeps every
+other user out; the unit sets `UMask=0077` so the socket itself is 0600 too. A
+loopback port would be different in kind: it is not uid-restricted, so any local
+user can connect and attempt auth, with only the password in the way. The
+password stays regardless — two independent barriers for the cost of one header.
+A TCP address in `rcd.env` still works, and `setup-daemon.sh` migrates the old
+default to a socket (restarting the daemon, because otherwise it would keep
+listening on the port while the plugin looked for a socket).
 
 **Security:** rclone's docs are blunt — "access to the rc API is equivalent to
 shell access as the user running rclone". Hence loopback-only *and*

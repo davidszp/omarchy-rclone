@@ -18,7 +18,8 @@
 #   * RCLONE_CONFIG points at a temporary config file, so `rclone config
 #     delete` (which rclone-rc calls without a --config flag) cannot reach the
 #     real one.
-#   * The daemon is our own, on a free port, and is killed on the way out.
+#   * The daemon is our own, on a unix socket inside the work dir, and is killed
+#     on the way out.
 # The backend is `local`, so nothing here needs an account or a network.
 #
 # Skips (exit 0) when rclone or fusermount3 is missing, so `check` stays
@@ -60,24 +61,26 @@ mkdir -p "$HOME/.config/rclone" "$WORK/data" "$WORK/mnt" "$WORK/mnt2"
 : > "$RCLONE_CONFIG"
 echo "hello" > "$WORK/data/file.txt"
 
-# A free port, so a second run (or the user's own daemon on 5572) cannot clash.
-PORT="$(python3 -c 'import socket
-s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+# A unix socket in the work directory, which is what the plugin uses in
+# production — no port to clash with the user's own daemon, and nothing another
+# user could connect to. The TCP form still works and is covered by the
+# address_of unit tests.
+SOCK="$WORK/rcd.sock"
 
 # rclone-rc refuses to run without this file, and reads the address and
 # credentials from it. Ours has no auth, and rclone rc sends the empty
 # user/pass harmlessly.
 cat > "$HOME/.config/rclone/rcd.env" <<EOF
-RCLONE_RC_ADDR=127.0.0.1:$PORT
+RCLONE_RC_ADDR=unix://$SOCK
 RCLONE_RC_USER=
 RCLONE_RC_PASS=
 EOF
 
-rclone rcd --rc-addr "127.0.0.1:$PORT" --rc-no-auth \
+rclone rcd --rc-addr "unix://$SOCK" --rc-no-auth \
   --log-file "$WORK/rcd.log" --log-level INFO >/dev/null 2>&1 &
 DAEMON_PID=$!
 
-rc() { rclone rc --url "http://127.0.0.1:$PORT/" "$@" 2>/dev/null; }
+rc() { rclone rc --unix-socket "$SOCK" "$@" 2>/dev/null; }
 
 up=no
 for _ in $(seq 1 20); do
