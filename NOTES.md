@@ -337,6 +337,19 @@ Passwords are still obscured on disk exactly as before: the rc API obscures a
 plain value on its own, like `config create --non-interactive` did, so no
 `obscure` flag is passed — declaring it again risks obscuring twice.
 
+**VERIFIED ON A REAL SIGN-IN.** `test/secret-trace.py` ran through an actual
+Google Drive setup — console credentials pasted into the wizard, browser
+handshake, mount — sweeping every process's argv and environment every 20ms:
+
+    4497 process sweeps
+    CLEAN — no credential seen in any process's arguments or environment,
+            in the journal, or in any world-readable file.
+
+The credentials existed in exactly one place afterwards, `rclone.conf` at mode
+0600. For scale: a planted decoy is caught 200+ times in a few seconds, and the
+old code held the value for a whole call, so the pattern this replaces would have
+shown up in hundreds of sweeps rather than none.
+
 **The regression test is in `test/remote-lifecycle-test.sh`** ("credentials never
 reach argv"): it polls `/proc` while a remote is created and asserts that no
 process holds the value. The marker reaches both the watcher and the request
