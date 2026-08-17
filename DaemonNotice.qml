@@ -31,7 +31,7 @@ CursorSurface {
 
     Text {
       text: "󰀦"
-      color: ui ? ui.urgent : Color.urgent
+      color: ui ? ui.urgent : Color.foreground
       font.family: ui ? ui.fontFamily : Style.font.family
       font.pixelSize: Style.font.heading
       Layout.alignment: Qt.AlignVCenter

@@ -61,7 +61,7 @@ Column {
     text: "⚠ Google shows a client secret only once, when the client is created. "
         + "For an existing client you cannot look it up — add a new secret, or create "
         + "a fresh Desktop client and save the JSON it offers you."
-    color: root.ui ? root.ui.urgent : Color.urgent
+    color: root.ui ? root.ui.urgent : Color.foreground
   }
 
   Note { text: "Remote name" ; opacity: 0.6 }
@@ -77,7 +77,7 @@ Column {
     visible: root.nameCollides
     text: "⚠ " + nameField.text.trim() + " already exists. Creating it again would "
         + "replace it and lose its sign-in. Pick another name."
-    color: root.ui ? root.ui.urgent : Color.urgent
+    color: root.ui ? root.ui.urgent : Color.foreground
   }
 
   Note { text: "Client ID" ; opacity: 0.6 }

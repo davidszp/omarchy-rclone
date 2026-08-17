@@ -74,7 +74,7 @@ Column {
     width: parent.width
     text: Model.jobSubtitle(root.job || {})
     color: (root.job && root.job.errors > 0)
-      ? (root.ui ? root.ui.urgent : Color.urgent)
+      ? (root.ui ? root.ui.urgent : Color.foreground)
       : (root.ui ? root.ui.dim : Color.foreground)
     font.family: root.ui ? root.ui.fontFamily : Style.font.family
     font.pixelSize: Style.font.caption

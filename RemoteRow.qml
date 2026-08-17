@@ -149,7 +149,7 @@ Column {
                ? "sign-in expired — reconnect to use it again"
                : Model.remoteSubtitle(root.remote || {}, root.service ? root.service.probes : {}))
           color: (root.pending > 0 || root.needsReauth)
-            ? (root.ui ? root.ui.urgent : Color.urgent)
+            ? (root.ui ? root.ui.urgent : Color.foreground)
             : (root.ui ? root.ui.dim : Color.foreground)
           font.family: root.ui ? root.ui.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
@@ -163,7 +163,7 @@ Column {
       Text {
         visible: root.pending > 0 || root.needsReauth
         text: "󰀦"
-        color: root.ui ? root.ui.urgent : Color.urgent
+        color: root.ui ? root.ui.urgent : Color.foreground
         font.family: root.ui ? root.ui.fontFamily : Style.font.family
         font.pixelSize: Style.font.icon
         Layout.alignment: Qt.AlignVCenter

@@ -11,7 +11,7 @@ import "Model.js" as Model
 // button for that with no friction would be irresponsible. So:
 //   - Copy is the default and never deletes.
 //   - Choosing Mirror auto-enables Dry run, and names the directory it would
-//     delete from, in the urgent colour.
+//     delete from, marked with a warning glyph and set at full strength.
 //   - The action button's own label changes to say which it will do.
 Rectangle {
   id: root
@@ -140,7 +140,7 @@ Rectangle {
       text: (Model.syncModeDestroys(root.modeVerb()) ? "⚠ " : "")
             + Model.syncModeHelp(root.modeVerb(), root.destFs)
       color: Model.syncModeDestroys(root.modeVerb())
-        ? (ui ? ui.urgent : Color.urgent)
+        ? (ui ? ui.urgent : Color.foreground)
         : (ui ? ui.dim : Color.foreground)
       font.family: ui ? ui.fontFamily : Style.font.family
       font.pixelSize: Style.font.caption
@@ -190,7 +190,7 @@ Rectangle {
         bordered: true
         fontSize: Style.font.caption
         foreground: (root.mirroring || root.twoWay) && !dryRun.checked
-          ? (root.ui ? root.ui.urgent : Color.urgent)
+          ? (root.ui ? root.ui.urgent : Color.foreground)
           : (root.ui ? root.ui.foreground : Color.foreground)
         fontFamily: root.ui ? root.ui.fontFamily : Style.font.family
         Layout.fillWidth: true
@@ -233,7 +233,7 @@ Rectangle {
     selected: checked
     property bool checked: false
     foreground: urgent && checked
-      ? (root.ui ? root.ui.urgent : Color.urgent)
+      ? (root.ui ? root.ui.urgent : Color.foreground)
       : (root.ui ? root.ui.foreground : Color.foreground)
     fontFamily: root.ui ? root.ui.fontFamily : Style.font.family
     opacity: checked ? 1.0 : 0.55

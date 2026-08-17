@@ -4,8 +4,9 @@ import qs.Commons
 import qs.Ui
 
 // One numbered step of a guided setup: circle, title, detail, and a button that
-// opens the relevant page. A step flagged `warn` renders in the urgent colour —
-// used for the publish step, whose omission silently breaks Drive a week later.
+// opens the relevant page. A step flagged `warn` renders at full strength while
+// its neighbours are dim — used for the publish step, whose omission silently
+// breaks Drive a week later. Emphasis is weight, never colour (see PanelTheme).
 Rectangle {
   id: root
 
@@ -15,7 +16,7 @@ Rectangle {
 
   readonly property bool warn: step && step.warn === true
   readonly property color accent: warn
-    ? (ui ? ui.urgent : Color.urgent)
+    ? (ui ? ui.urgent : Color.foreground)
     : (ui ? ui.foreground : Color.foreground)
 
   implicitHeight: content.implicitHeight + Style.space(16)

@@ -152,7 +152,7 @@ Column {
       wrapMode: Text.WordWrap
       text: "⚠ " + nameField.text.trim() + " already exists. Creating it again "
           + "would replace it and lose its sign-in. Pick another name."
-      color: root.ui ? root.ui.urgent : Color.urgent
+      color: root.ui ? root.ui.urgent : Color.foreground
       font.family: root.ui ? root.ui.fontFamily : Style.font.family
       font.pixelSize: Style.font.caption
     }

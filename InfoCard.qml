@@ -2,7 +2,8 @@ import QtQuick
 import qs.Commons
 
 // A tinted rounded container for a block of explanation. `urgent: true` tints
-// it with the warning colour instead of the foreground.
+// it a shade stronger — the plugin does not colour text or panels, so this is a
+// difference in weight, not in hue (see PanelTheme).
 //
 // Callers put their content in `content` and set `contentHeight`; this only
 // owns the box. Three of these appear in the setup wizard alone, which is why
@@ -17,7 +18,7 @@ Rectangle {
   default property alias content: holder.data
 
   readonly property color tint: urgent
-    ? (ui ? ui.urgent : Color.urgent)
+    ? (ui ? ui.urgent : Color.foreground)
     : (ui ? ui.foreground : Color.foreground)
 
   implicitHeight: contentHeight + padding

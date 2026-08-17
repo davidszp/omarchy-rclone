@@ -129,7 +129,7 @@ Column {
             + "SEPARATE project instead. Full Drive access is a restricted scope, so "
             + "adding it forces re-verification and caps the app at 100 users until "
             + "Google approves it."
-        color: wizard.ui ? wizard.ui.urgent : Color.urgent
+        color: wizard.ui ? wizard.ui.urgent : Color.foreground
         font.family: wizard.ui ? wizard.ui.fontFamily : Style.font.family
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
