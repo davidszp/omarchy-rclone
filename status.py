@@ -25,6 +25,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Same directory, but this may be run from anywhere (the widget passes an
+# absolute path, the tests import it), so do not rely on the cwd.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rcclient  # noqa: E402
+
 DEFAULT_ADDR = "127.0.0.1:5572"
 ENV_FILE = Path.home() / ".config" / "rclone" / "rcd.env"
 
@@ -61,19 +66,13 @@ SELF_SUFFICIENT_TYPES = ("local", "memory")
 
 
 def read_env_file(path):
-    """Parse the KEY=value file shared with the rclone-rcd systemd unit."""
-    values = {}
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                values[key.strip()] = value.strip().strip('"').strip("'")
-    except OSError:
-        return {}
-    return values
+    """Parse the KEY=value file shared with the rclone-rcd systemd unit.
+
+    One parser, in rcclient, because `rclone-rc` reads the same file through it
+    from the shell — two copies would eventually disagree about quoting and the
+    symptom would be an authentication failure nobody could place.
+    """
+    return rcclient.read_env(path)
 
 
 def config_mtime(path=None):
@@ -148,36 +147,32 @@ def tidy_error(text):
 
 
 class Rclone:
+    # Calls go over HTTP from this process (see rcclient) rather than by running
+    # `rclone rc --user … --pass …`, which would put the daemon's password —
+    # equivalent to shell access, per rclone's own docs — into the world-readable
+    # process list on every poll. `binary` is still needed for the few things
+    # that genuinely are CLI-only, like `config dump`.
     def __init__(self, binary, env):
         self.binary = binary
-        addr = env.get("RCLONE_RC_ADDR", DEFAULT_ADDR)
-        self.url = addr if addr.startswith("http") else "http://%s/" % addr
-        self.user = env.get("RCLONE_RC_USER", "")
-        self.password = env.get("RCLONE_RC_PASS", "")
+        self.env = env
+        self.url = rcclient.url_for(env)
         self.error = ""
+        # No self.password. It used to be held here to build a command line, and
+        # a copy of a credential that nothing reads is a copy waiting to be
+        # logged, printed in a traceback, or put back into an argv by someone
+        # who finds the field and assumes it is there to be used. rcclient reads
+        # the env file where it needs it.
 
     def rc(self, method, params=None, timeout=TIMEOUT_FAST):
         """Call one rc method. Returns the parsed object, or None on failure."""
-        command = [self.binary, "rc", "--url", self.url]
-        if self.user:
-            command += ["--user", self.user, "--pass", self.password]
-        command.append(method)
-        for key, value in (params or {}).items():
-            command.append("%s=%s" % (key, value))
-
-        code, stdout, stderr = run(command, timeout)
-        if code != 0:
+        payload, error = rcclient.call(method, params, timeout, self.env)
+        if error:
             # Only the first failure is worth reporting; later calls fail for
             # the same reason and would just overwrite it with noise.
             if not self.error:
-                self.error = tidy_error(stderr or stdout or "rc call failed")
+                self.error = tidy_error(error)
             return None
-        try:
-            return json.loads(stdout) if stdout else {}
-        except json.JSONDecodeError:
-            if not self.error:
-                self.error = "could not parse rc response for %s" % method
-            return None
+        return payload
 
     def rc_detailed(self, method, params=None, timeout=TIMEOUT_FAST):
         """Like rc(), but returns (payload, error) WITHOUT touching self.error.
@@ -186,19 +181,7 @@ class Rclone:
         would attribute one remote's error to whichever call happened to be
         first — and the whole point here is to say which remote is broken.
         """
-        command = [self.binary, "rc", "--url", self.url]
-        if self.user:
-            command += ["--user", self.user, "--pass", self.password]
-        command.append(method)
-        for key, value in (params or {}).items():
-            command.append("%s=%s" % (key, value))
-        code, stdout, stderr = run(command, timeout)
-        if code != 0:
-            return None, (stderr or stdout or "call failed")
-        try:
-            return (json.loads(stdout) if stdout else {}), ""
-        except json.JSONDecodeError:
-            return None, "could not parse response"
+        return rcclient.call(method, params, timeout, self.env)
 
     def config_dump(self):
         """Remote name + type, read straight from the config file (no daemon)."""

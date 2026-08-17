@@ -32,6 +32,11 @@ step "status tests (py)" python3 test/status-test.py
 # widget's IpcHandler out of registration — see gotcha 9. ast.parse touches
 # nothing on disk.
 step "status.py syntax" python3 -c "import ast,sys; ast.parse(open('status.py').read())"
+# Both are Python without a .py name, so nothing else here would catch a syntax
+# error in them — and rclone-config is only reached from the setup flow, which is
+# the path a developer is least likely to exercise by hand.
+step "rclone-config syntax" python3 -c "import ast; ast.parse(open('rclone-config').read())"
+step "rcclient.py syntax" python3 -c "import ast; ast.parse(open('rcclient.py').read())"
 step "rclone-rc syntax" bash -n rclone-rc
 step "setup-daemon.sh syntax" bash -n setup-daemon.sh
 step "check syntax" bash -n check

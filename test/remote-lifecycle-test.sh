@@ -168,6 +168,47 @@ eq "$(sections)" "" "the residue is gone from the config file"
 eq "$("$PLUGIN_DIR/rclone-rc" reap-residue 2>&1 | tail -1)" '{"ok": true, "reaped": 0, "names": []}' \
    "reaping again is a no-op"
 
+echo "  -- credentials never reach argv"
+# THE REGRESSION TEST for the marketplace review finding. Setting up a remote
+# used to run `rclone config create … pass=<secret>`, and /proc/<pid>/cmdline is
+# readable by every local process, so any of them could poll the password out of
+# the process list while setup ran. Values now travel on stdin and reach the
+# daemon in an HTTP body.
+#
+# The marker is passed through the ENVIRONMENT into both the watcher and the
+# request builder, so it never appears in this test's own argv either — otherwise
+# the harness would trip its own alarm and the test would be worthless.
+cat > "$WORK/watch.py" <<'PY'
+import glob, os, time
+needle, me = os.environ["NEEDLE"], str(os.getpid())
+hits, end = set(), time.time() + 8
+while time.time() < end:
+    for path in glob.glob("/proc/[0-9]*/cmdline"):
+        pid = path.split("/")[2]
+        if pid == me:
+            continue
+        try:
+            argv = open(path, "rb").read().decode("utf-8", "ignore")
+        except OSError:
+            continue
+        if needle in argv:
+            hits.add(pid)
+    time.sleep(0.01)
+print(len(hits))
+PY
+NEEDLE=lifecycle-marker-pw python3 "$WORK/watch.py" > "$WORK/leak.txt" &
+watcher=$!
+sleep 0.5
+MARKER=lifecycle-marker-pw python3 -c 'import json, os, sys
+sys.stdout.write(json.dumps({"parameters": {"host": "h.example", "user": "bob",
+                                            "pass": os.environ["MARKER"]}}))' \
+  | "$PLUGIN_DIR/rclone-config" start argvtest sftp >/dev/null 2>&1
+wait "$watcher"
+eq "$(cat "$WORK/leak.txt")" "0" "no process holds a config value in its argv"
+eq "$(rclone config dump | python3 -c 'import json,sys;print(json.load(sys.stdin)["argvtest"]["pass"] != "lifecycle-marker-pw")')" \
+   "True" "and it is obscured on disk, not stored as typed"
+rclone config delete argvtest >/dev/null 2>&1
+
 echo "  -- reaping never touches a real remote"
 rclone config create keeper local >/dev/null 2>&1
 printf '\n[ghost]\ntoken = {"access_token":"y"}\n' >> "$RCLONE_CONFIG"

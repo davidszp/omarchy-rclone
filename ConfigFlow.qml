@@ -22,6 +22,9 @@ Item {
   property string type: ""
 
   readonly property bool active: name !== ""
+  // True while a step is in flight. For the step that answers the OAuth
+  // question that means rclone is waiting on a browser sign-in, which is why
+  // Service watches this to poll for the auth URL (see openAuthUrlIn there).
   readonly property bool busy: stepRunner.running
 
   signal reported(string message, bool isError)
@@ -45,10 +48,23 @@ Item {
     name = String(remoteName)
     type = String(backendType)
     step = ({})
-    var argv = [pluginDir + "rclone-config", "start", name, type]
+    // Over STDIN, not argv: these are the answers from BackendForm, which for
+    // sftp/webdav/ftp/s3 include passwords and secret keys. Anything in argv is
+    // readable from /proc/<pid>/cmdline by every local process on the machine
+    // for as long as the call runs.
+    var parameters = ({})
     var extra = seeds || []
-    for (var i = 0; i < extra.length; i++) argv.push(String(extra[i]))
-    if (!stepRunner.start(argv)) return
+    for (var i = 0; i < extra.length; i++) {
+      var pair = String(extra[i])
+      var split = pair.indexOf("=")
+      if (split <= 0) continue
+      parameters[pair.substring(0, split)] = pair.substring(split + 1)
+    }
+    stepRunner.secret = JSON.stringify({ parameters: parameters })
+    if (!stepRunner.start([pluginDir + "rclone-config", "start", name, type])) {
+      stepRunner.secret = ""
+      return
+    }
     reported("Setting up " + type + "…", false)
   }
 
@@ -58,7 +74,13 @@ Item {
     if (state === "") return
     // Answering the oauth step is what opens the browser, so this call can sit
     // for as long as the user takes to approve. No timeout on purpose.
-    stepRunner.start([pluginDir + "rclone-config", "next", name, state, String(value)])
+    //
+    // The answer goes over stdin: any step can be a password, and rclone does
+    // not reliably flag which (see `secret` in rclone-config).
+    stepRunner.secret = JSON.stringify({ result: String(value) })
+    if (!stepRunner.start([pluginDir + "rclone-config", "next", name, state])) {
+      stepRunner.secret = ""
+    }
   }
 
   function abort() {

@@ -631,14 +631,6 @@ function suggestRemoteName(type, existingRemotes) {
 // exposed in rclone's own argv for that one sub-second call; rclone offers no
 // stdin input for config values (`--json` is argv too).
 // Same handling as the enterprise Wi-Fi passphrase in Omarchy's own shell.
-var driveCreateScript = '\
-set -eu\n\
-name="$1"\n\
-client_id="$2"\n\
-IFS= read -r client_secret\n\
-exec rclone config create "$name" drive \
-  client_id="$client_id" client_secret="$client_secret" scope=drive\n\
-'
 
 if (typeof module !== "undefined") {
   module.exports = {
@@ -651,7 +643,6 @@ if (typeof module !== "undefined") {
     syncModeHelp: syncModeHelp, syncModeDestroys: syncModeDestroys, transferSubtitle: transferSubtitle,
     jobTitle: jobTitle, jobSubtitle: jobSubtitle, shortFs: shortFs,
     transferredSubtitle: transferredSubtitle,
-    driveCreateScript: driveCreateScript,
     driveScopes: driveScopes, driveSetupSteps: driveSetupSteps,
     driveCredentialsUrl: driveCredentialsUrl,
     quickProviders: quickProviders, suggestRemoteName: suggestRemoteName,

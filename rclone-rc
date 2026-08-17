@@ -42,8 +42,14 @@ EXTRA="${4:-}"
 # remount consumes EXTRA as the OLD path, so its force flag needs its own slot.
 FORCE="${5:-}"
 
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 ENV_FILE="$HOME/.config/rclone/rcd.env"
 [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE — run the plugin's daemon setup first" >&2; exit 1; }
+# Sourced for RCLONE_RC_ADDR, which several messages quote. The credentials in
+# here are NOT read from the shell any more — rcclient.py opens the file itself,
+# so they never become an environment variable of a process that runs rclone,
+# nor an argument to one.
 # shellcheck disable=SC1090
 . "$ENV_FILE"
 
@@ -66,9 +72,24 @@ case "$ACTION" in
   *)    [ -n "$MOUNTPOINT" ] || usage ;;
 esac
 
+# One rc call. Same call sites as before — `rc <method> key=value…` — but the
+# request goes over HTTP from rcclient.py instead of through `rclone rc`, which
+# would put $RCLONE_RC_PASS in argv for every mount, poll and job. That password
+# is shell access by rclone's own description, and /proc/<pid>/cmdline is
+# readable by every local process.
+#
+# Arguments are NUL-separated on stdin because vfsOpt is a multi-line JSON blob;
+# line-separating them would split it. Values stay strings, which is exactly
+# what `rclone rc key=value` sent (measured — even valid JSON went as a string,
+# and the daemon parses it), so mount behaviour is unchanged.
 rc() {
-  rclone rc --url "http://${RCLONE_RC_ADDR}/" \
-    --user "$RCLONE_RC_USER" --pass "$RCLONE_RC_PASS" "$@"
+  local method="$1"
+  shift
+  if [ "$#" -gt 0 ]; then
+    printf '%s\0' "$@" | python3 "$SELF_DIR/rcclient.py" "$method"
+  else
+    printf '' | python3 "$SELF_DIR/rcclient.py" "$method"
+  fi
 }
 
 # The daemon may still be starting when the shell reconciles mounts at login,

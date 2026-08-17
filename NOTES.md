@@ -23,25 +23,28 @@ The alternative — a separate `rclone mount` per remote, each with its own
 `mount/mount` with `_async=true`) and they all show up in one place.
 
 ```
-Panel.qml → Service.qml → status.py → rclone rc → rclone rcd (127.0.0.1:5572)
+Panel.qml → Service.qml → status.py → rcclient.py → HTTP → rclone rcd (127.0.0.1:5572)
 ```
 
 Where things live. `Panel.qml` owns layout and the keyboard cursor and nothing
 else; `Service.qml` owns all state and every subprocess; `Model.js` is pure
 logic with no QML imports, which is the only reason it can be unit tested.
-Four pieces are split out because they change for their own reasons:
+Five pieces are split out because they change for their own reasons:
 
 | file | what it owns |
 |---|---|
 | `PanelIpc.qml` | the scripting surface (`omarchy-shell <id> <fn>`), also how the tests drive the live widget |
 | `ConfigFlow.qml` | one run through rclone's interactive config machine, including cleanup of the half-made remote a failure leaves behind |
+| `rcclient.py` | the ONLY thing that talks to the rc API — HTTP, with the password in a header and parameters in the body (see "Keeping credentials out of argv") |
 | `AddRemoteSection.qml` | "Add a remote", the cloud grid, and the extra question some backends need first |
 | `BackendForm.qml` | the generated form for backends with no interactive setup |
 
-`status.py` shells out to `rclone rc` rather than speaking HTTP from QML,
-because that is the grain of every first-party Omarchy plugin (Dropbox shells
-to a Python helper, Tailscale to the CLI) and there is no `XMLHttpRequest`
-anywhere in the Omarchy shell.
+The shell runs a Python helper rather than speaking HTTP from QML, because that
+is the grain of every first-party Omarchy plugin (Dropbox shells to a Python
+helper, Tailscale to the CLI) and there is no `XMLHttpRequest` anywhere in the
+Omarchy shell. Inside that helper the rc calls are plain HTTP via `rcclient.py`;
+they used to shell out again to `rclone rc`, which leaked the daemon password
+into argv on every poll.
 
 The daemon runs as `~/.config/systemd/user/rclone-rcd.service`, with its bind
 address and credentials in `~/.config/rclone/rcd.env` (0600), shared with
@@ -52,6 +55,13 @@ the unit needs no flags beyond `EnvironmentFile`.
 shell access as the user running rclone". Hence loopback-only *and*
 `--rc-user`/`--rc-pass` with a random password, rather than `--rc-no-auth`. A
 local web page cannot POST to an authenticated endpoint.
+
+**Nothing sensitive may go in argv, ever** — `/proc/<pid>/cmdline` is readable by
+every local process, so an argument is public for as long as the command runs.
+That rules out the obvious `rclone rc --user U --pass P` and
+`rclone config create … pass=…`, so all rc traffic goes through `rcclient.py`,
+which puts the password in an `Authorization` header and the parameters in the
+request body. See "Keeping credentials out of argv".
 
 `config dump` is read directly from the config file (no daemon needed), and only
 `name` + `type` are copied into the payload, plus an `incomplete` flag for a
@@ -81,7 +91,7 @@ must be green, and it must leave no file behind in this directory (gotcha 10).
 | `test/model-test.js` | node | all of `Model.js` — pure logic, no QML imports |
 | `test/status-test.py` | python3 | `status.py`'s pure functions (dict in, dict out) |
 | `test/glyph-coverage.py` | python3 | every Nerd Font codepoint the QML draws actually exists |
-| `test/remote-lifecycle-test.sh` | rclone + fusermount3 | add → mount → remove, against its own daemon in a temp `HOME` |
+| `test/remote-lifecycle-test.sh` | rclone + fusermount3 | add → mount → remove, against its own daemon in a temp `HOME`; also asserts no credential reaches argv |
 | `test/panel-test.sh` | a running Omarchy shell | drives the LIVE widget over IPC |
 
 The last two **skip with exit 0** when their dependency is missing, so `check`
@@ -273,6 +283,70 @@ next token refresh.
 `config/listremotes` does not. `systemctl --user restart rclone-rcd.service` is
 the only cure for the orphan itself.
 
+## Keeping credentials out of argv
+
+Reported by the marketplace reviewer (HANCORE-linux/omarchy-plugin-marketplace
+#441): backend answers were passed as arguments, so provider credentials could be
+read from the local process list during configuration. Confirmed, and the search
+that followed found a second, larger instance of the same mistake.
+
+**Why an argument is not private.** `/proc/<pid>/cmdline` is world-readable, so
+any local process — another user, a sandboxed app, a service account — can poll
+the process list and read an argument for as long as the command runs. Measured
+with a plain `/proc` poller:
+
+    rclone config create leaktest sftp host=example.com user=bob pass=hunter2secret
+
+Three paths were affected, in ascending order of how bad they were:
+
+| what leaked | where | for how long |
+|---|---|---|
+| the Drive client secret | `rclone config create client_secret=…` | one call |
+| every `BackendForm` value — SFTP/WebDAV/FTP passwords, S3 secret keys | `rclone-config` argv, then `config create key=value` | one call |
+| **the rcd password** | `rclone rc --user … --pass …` | **every poll, every 2–30s, forever** |
+
+The third was not in the report and is the worst of the three: that password *is*
+the security boundary the `--rc-user`/`--rc-pass` setup exists to create, and it
+was being published continuously by the status poll.
+
+**The fix.** `rcclient.py` is now the only thing that speaks to the daemon. The
+password goes in an `Authorization` header, parameters go in the request body, and
+argv carries at most a method name. The config flow moved from the `rclone config`
+CLI to the rc API, whose `config/create` accepts the *same* state machine
+(`opt.state` / `opt.result` / `continue`), so `rclone-config` kept its shape while
+values moved to stdin: `start`/`connect` read `{"parameters": {…}}` and `next`
+reads `{"result": …}`. `rclone-config` is Python now because it builds and parses
+JSON around credentials, and quoting those through a shell is the same class of
+mistake.
+
+Two things that had to be checked rather than assumed, because they are silent
+behaviour changes:
+
+- **`rclone rc key=value` sends every value as a STRING**, even valid JSON —
+  measured, the daemon parses it server-side. `rcclient.py`'s CLI path does the
+  same, so swapping transports cannot quietly change how a mount is configured.
+- **The OAuth handshake now runs inside the daemon**, not in a child process of
+  ours, so its output is no longer ours to read. The daemon does open the browser
+  itself (verified), but if it cannot, the auth URL would exist only in its log.
+  `config/oauthstatus` returns that URL, so Service polls it while a step is in
+  flight and opens it. `abort` also calls `config/oauthstop`, which fixes a
+  pre-existing leak: an abandoned flow used to leave rclone's callback server
+  listening on :53682, where it refuses the next flow's handshake.
+
+Passwords are still obscured on disk exactly as before: the rc API obscures a
+plain value on its own, like `config create --non-interactive` did, so no
+`obscure` flag is passed — declaring it again risks obscuring twice.
+
+**The regression test is in `test/remote-lifecycle-test.sh`** ("credentials never
+reach argv"): it polls `/proc` while a remote is created and asserts that no
+process holds the value. The marker reaches both the watcher and the request
+builder through the *environment*, so the test cannot trip over its own argv —
+verified to fail (`expected 0, got 2`) when pointed back at the old CLI form.
+
+Not in scope, and worth knowing: the daemon's own credentials come from
+`EnvironmentFile`, so they live in its environment, and `/proc/<pid>/environ` is
+readable only by the owner. `ExecStart` carries no secret.
+
 ## Setup flow
 
 **Google Drive is the one provider with a hand-written wizard**
@@ -284,11 +358,14 @@ Google expires every grant after 7 days, so Drive stops working a week later),
 and the copy button for the three scopes.
 
 Pressing Connect runs `rclone config create <name> drive client_id=… scope=drive`
-and lets rclone drive its own OAuth handshake. **The client secret goes over
-stdin, never argv** — argv is world-readable through `ps`; this follows the
-first-party Wi-Fi panel (`plugins/panels/network/Panel.qml`, `stdinEnabled: true`).
-Keep that property in anything new that handles a credential. If rclone prints
-the auth URL instead of opening a browser, `openAuthUrlFrom()` opens it.
+and lets rclone drive its own OAuth handshake. The client secret reaches our
+wrapper over **stdin**, so it is never in this plugin's argv nor in shell history
+— the same handling as the first-party Wi-Fi panel
+(`plugins/panels/network/Panel.qml`, `stdinEnabled: true`).
+
+`rclone-config` then forwards it to the daemon in an HTTP body, so it is in no
+process's argv at any point — see "Keeping credentials out of argv" below for
+what that replaced and why.
 
 Every other provider is set up **inside the panel**, with no per-provider code —
 see "Connecting other providers" below. `rclone config` in a floating terminal

@@ -271,23 +271,31 @@ Item {
     ])
   }
 
-  // Creates a Drive remote, then lets rclone run its own OAuth handshake (it
-  // serves a callback on 127.0.0.1:53682 and opens the browser). The client
-  // SECRET arrives over stdin, so it is never in THIS plugin's argv nor in shell
-  // history. Note the honest limit: the wrapper then hands it to
-  // `rclone config create` as an argument, so it sits in rclone's own argv for
-  // the duration of that call. There is no stdin path into rclone for this —
-  // `rclone rc --json` is also argv — so that residual exposure is unavoidable
-  // short of writing the config file ourselves.
+  // Creates a Drive remote, then lets rclone run its OAuth handshake (it serves
+  // a callback on 127.0.0.1:53682 and opens the browser).
+  //
+  // The client ID and SECRET both go over stdin as JSON, and `rclone-config`
+  // forwards them to the daemon in an HTTP body, so neither ever appears in any
+  // process's argv. The previous version handed the secret to
+  // `rclone config create` as an argument, where /proc/<pid>/cmdline exposed it
+  // to every local process for the length of the call — reported by the
+  // marketplace reviewer, and the same hole existed for every provider password.
   function createDriveRemote(name, clientId, clientSecret) {
     if (createRunner.running) return
     _authUrlOpened = false
     _creatingName = String(name || "gdrive")
-    createRunner.secret = String(clientSecret || "")
-    createRunner.start([
-      "bash", "-c", Model.driveCreateScript,
-      "rclone-drive-setup", String(name || "gdrive"), String(clientId || "")
-    ])
+    createRunner.secret = JSON.stringify({
+      parameters: {
+        client_id: String(clientId || ""),
+        client_secret: String(clientSecret || ""),
+        scope: "drive"
+      }
+    })
+    if (!createRunner.start(["python3", pluginDir + "rclone-config", "connect",
+                             String(name || "gdrive"), "drive"])) {
+      createRunner.secret = ""
+      return
+    }
     report("Signing in to Google — finish in your browser…", false)
   }
 
@@ -301,8 +309,11 @@ Item {
   // would race a remote that does not exist yet.
   signal remoteCreated(string name)
 
-  // rclone normally opens the browser itself; if it only prints the URL we open
-  // it. Same fallback as the first-party Dropbox plugin.
+  // rclone normally opens the browser itself; if it only tells us the URL we
+  // open it. Same fallback as the first-party Dropbox plugin. Fed from two
+  // places: the Drive wrapper's output, and ConfigFlow's oauthstatus poll (the
+  // provider flows run their handshake inside the daemon, whose output we never
+  // see). The guard makes it open-once per flow, not once per session.
   function openAuthUrlIn(text) {
     if (_authUrlOpened) return
     var match = String(text || "").match(/https?:\/\/\S*(accounts\.google\.com|127\.0\.0\.1:53682)\S*/)
@@ -321,7 +332,12 @@ Item {
   // Drives any backend that needs more than a one-shot create. Non-OAuth
   // backends finish on the first call (measured: every one of s3, b2, webdav,
   // sftp, crypt returns done immediately), so this loop only really runs for
-  function startProviderFlow(name, type, seeds) { configFlow.start(name, type, seeds) }
+  // Reset the open-once guard per flow, or a second setup in the same session
+  // would never get its browser opened.
+  function startProviderFlow(name, type, seeds) {
+    _authUrlOpened = false
+    configFlow.start(name, type, seeds)
+  }
   function answerFlow(value) { configFlow.answer(value) }
   function abortFlow() { configFlow.abort() }
 
@@ -635,6 +651,35 @@ Item {
     onRefreshNeeded: delayedRefresh.restart()
   }
 
+  // The OAuth handshake now happens inside the DAEMON, not in a child process of
+  // ours: every config step goes over the rc API so that credentials stay out of
+  // argv. The daemon does open the browser itself — verified — but when it
+  // cannot (no session environment, no xdg-open) the auth URL exists only in its
+  // log, and the panel would sit at "Signing in…" forever with no way through.
+  //
+  // Polled, not awaited: the call that answers the OAuth question BLOCKS until
+  // the sign-in completes, and the URL only exists while it is in flight. Runs
+  // for both paths — the provider flows and the Drive wizard.
+  Timer {
+    interval: 1500
+    repeat: true
+    running: createRunner.running || configFlow.busy
+    onTriggered: authStatusRunner.start(["python3", root.pluginDir + "rcclient.py",
+                                         "config/oauthstatus"])
+  }
+
+  CommandRunner {
+    id: authStatusRunner
+    // Deliberately silent on failure: with no sign-in in progress the method
+    // errors, which is the common case on every poll of a non-OAuth step.
+    onSucceeded: function(output) {
+      try {
+        var parsed = JSON.parse(String(output || "").trim())
+        if (String(parsed.status) === "running") root.openAuthUrlIn(String(parsed.authUrl || ""))
+      } catch (e) { /* not JSON: nothing to open */ }
+    }
+  }
+
   // ---- Timers --------------------------------------------------------------
 
   Timer {
@@ -761,8 +806,19 @@ Item {
   CommandRunner {
     id: createRunner
     failMessage: "rclone config create failed"
-    onLine: function(text) { root.openAuthUrlIn(text) }
-    onSucceeded: function() {
+    // The helper reports a refused setup as {"ok":false,"error":…} and still
+    // exits 0 — it is a JSON protocol, not an exit status — so a zero exit is
+    // NOT success on its own. Announcing "connected" on exit code alone would
+    // claim a working remote when rclone had rejected the credentials.
+    onSucceeded: function(output) {
+      var parsed = null
+      try { parsed = JSON.parse(String(output || "").trim()) } catch (e) { parsed = null }
+      if (parsed && parsed.ok === false) {
+        root.report(String(parsed.error || "Could not connect Google Drive"), true)
+        root._creatingName = ""
+        delayedRefresh.restart()
+        return
+      }
       root.report("Google Drive connected", false)
       delayedRefresh.restart()
       if (root._creatingName !== "") root.remoteCreated(root._creatingName)
