@@ -38,6 +38,18 @@ IpcHandler {
   // back ~700ms so a fast action cannot flash a row in and out. Exposed to make
   // that timing observable — it is otherwise only visible as a flicker.
   function statusLine(): string { return ipc.service.statusLine }
+
+  // Every input to the panel's action buttons, in ONE call. A control that blinks
+  // is a binding flipping, and with each IPC round trip costing ~250ms you cannot
+  // sample four properties separately fast enough to see which one it was.
+  function buttonState(): string {
+    return "busy=" + (ipc.service.busy ? 1 : 0)
+      + " rc=" + (ipc.service.rcRunning ? 1 : 0)
+      + " mounts=" + ipc.service.mounts.length
+      + " remotes=" + ipc.service.remotes.length
+      + " probing=" + (ipc.service.probing ? 1 : 0)
+      + " jobs=" + ipc.service.runningJobs
+  }
   function refresh(): string { ipc.service.refresh(); return "ok" }
   function probe(): string { ipc.service.probe(); return "ok" }
 

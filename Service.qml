@@ -106,14 +106,20 @@ Item {
   // cannot fire twice — omitting the mount and pin runners here once let a second
   // click through while the first was still running.
   //
-  // NOT the status poll. That runs every 2s while anything is happening and takes
-  // ~230ms, so including it flipped `busy` on and off about eight times a minute:
-  // the refresh and unmount-all buttons visibly blinked their disabled state
-  // during any activity, for background work the user never asked for and cannot
-  // conflict with. A poll never contends with an action — the runners each refuse
-  // to start while already running — so it has no business disabling anything.
-  readonly property bool busy: probeRunner.running
-    || actionRunner.running || mountRunner.running
+  // NOT the status poll, and NOT a probe. Both are background reads that cannot
+  // conflict with anything, and including them made every button gated on `busy`
+  // blink its disabled state:
+  //
+  //   * the poll runs every 2s while anything is happening and takes ~230ms;
+  //   * a probe is a network round-trip PER REMOTE, and opening the panel starts
+  //     one on its own (probeIfStale) — so simply opening the panel dimmed the
+  //     refresh and unmount-all buttons for seconds, and doing that just before
+  //     an unmount produced dim, undim, dim, undim around the click.
+  //
+  // The runners each refuse to start while already running, so nothing here needs
+  // a global flag to prevent a double click — `probing` guards the probe button
+  // itself. `busy` means "a user action that changes something is in flight".
+  readonly property bool busy: actionRunner.running || mountRunner.running
     || pinRunner.running || createRunner.running || syncRunner.running
 
   // Two intervals, because the two states have genuinely different costs: a

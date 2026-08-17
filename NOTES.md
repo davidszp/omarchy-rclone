@@ -226,13 +226,19 @@ and anything finishing inside that says nothing at all; the row leaving the list
 the feedback. Errors are never delayed — they persist, so they cannot flicker.
 Bind new status text to `statusLine`.
 
-**16. `busy` must not include the status poll.** It once did, and since the poll
-runs every 2s while anything is happening and takes ~230ms, every button gated on
-`!busy` visibly blinked its disabled state throughout an unmount. `busy` means "a
-user action is in flight" — the runners each refuse to start while already running,
-so a poll cannot contend with anything and has no business disabling a control.
-Verified with `omarchy-shell <id> target`, which reports the flag: 10 of 14 samples
-busy before, 0 of 14 after, while an action still holds it for its whole duration.
+**16. `busy` must not include background reads.** It once included the status poll
+(every 2s, ~230ms) and the probe (a network round-trip PER REMOTE, started on its
+own by `probeIfStale` when the panel opens). Every button gated on `!busy` blinked
+its disabled state as a result — and opening the panel then unmounting produced
+dim, undim, dim, undim around the click. `busy` means "a user action that changes
+something is in flight". Nothing needs a global flag to stop a double click: each
+runner refuses to start while running, and the probe button gates on `probing`.
+
+`omarchy-shell <id> buttonState` prints every input to those buttons in one call,
+because with each IPC round trip costing ~250ms you cannot sample four properties
+separately fast enough to catch which one flipped. For anything shorter than that,
+put a temporary `console.log` on the `Changed` signal and read journald at
+`-o short-precise` — that is how this one was finally pinned down.
 
 **17. Emphasis is weight, never colour.** `PanelTheme.urgent` resolves to
 `foreground` on purpose: the theme's real urgent colour is red in dark themes and

@@ -771,7 +771,9 @@ Panel {
                 tooltipText: "Check each remote is reachable"
                 foreground: theme.foreground
                 fontFamily: theme.fontFamily
-                enabled: rclone.rcRunning && rclone.remotes.length > 0 && !rclone.busy
+                // `probing`, not `busy`: a probe must not be startable twice, but
+                // it has no reason to wait for a mount or a sync to finish.
+                enabled: rclone.rcRunning && rclone.remotes.length > 0 && !rclone.probing
                 onClicked: rclone.probe()
               }
             }
