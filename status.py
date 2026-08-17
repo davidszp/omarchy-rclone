@@ -30,7 +30,6 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rcclient  # noqa: E402
 
-DEFAULT_ADDR = "127.0.0.1:5572"
 ENV_FILE = Path.home() / ".config" / "rclone" / "rcd.env"
 
 # Mounts to restore at login, as [{"fs": ..., "mountPoint": ...}].

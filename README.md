@@ -70,11 +70,12 @@ something is transferring (2s).
 ./check          # everything verifiable without a running shell — run this first
 ```
 
-That covers the pure logic, the Python helper, shell syntax, the manifest, and
-that every icon exists in the font. It also runs the add → mount → remove
-lifecycle against a throwaway rclone daemon, and drives the *live* panel over
-IPC — the only way to test QML that imports Omarchy's own components. The last
-two skip themselves when there is no rclone or no running shell.
+That covers the pure logic, the Python helpers, shell syntax, the manifest, that
+every icon exists in the font, and that nothing in the plugin has lost its last
+caller. It also runs the add → mount → remove lifecycle against a throwaway
+rclone daemon, and drives the *live* panel over IPC — the only way to test QML
+that imports Omarchy's own components. The last two skip themselves when there is
+no rclone or no running shell, and a skip is not a pass.
 
 One rule worth repeating: **after changing a `.qml` file, restart the shell
 before believing anything.** Saving hot-reloads the plugin and that covers edits
@@ -82,9 +83,15 @@ to existing code, but a newly *added* function does not take effect until
 `omarchy restart shell` — with no error to tell you which case you are in
 (NOTES.md, gotcha 11).
 
-`status.py` is the only thing that talks to rclone. `Model.js` is pure logic
-with no QML imports, which is why it can be unit tested. Everything else is a
-panel component. See [NOTES.md](NOTES.md) for how it fits together and the
+Give it a second or two between saving and restarting, though: restarting inside
+the plugin's own reload window crashes Quickshell
+([quickshell#956](https://github.com/quickshell-mirror/quickshell/issues/956), open,
+not this plugin's bug). The shell restarts itself, but you lose your place.
+
+`status.py` is the only thing that reads rclone's state, and `rcclient.py` the
+only thing that talks to its API — over a unix socket, so no credential is ever an
+argument. `Model.js` is pure logic with no QML imports, which is why it can be unit
+tested. Everything else is a panel component. See [NOTES.md](NOTES.md) for how it fits together and the
 traps found on the way.
 
 ## Not done yet

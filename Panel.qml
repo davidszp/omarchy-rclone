@@ -15,6 +15,7 @@ Panel {
   ipcTarget: "io.github.davidszp.omarchy-rclone"
   manageIpc: false
 
+  // ---- Panel state: the cursor, and which form is open ----------------------
   property string focusSection: "bandwidth"
   property int remoteIndex: 0
   // Horizontal position within the focused remote row. 0 is the row itself;
@@ -49,6 +50,7 @@ Panel {
   // is nothing to scroll is the cheaper trade.
   readonly property int scrollGutter: Style.space(8)
 
+  // ---- Derived geometry and colour ------------------------------------------
   readonly property color barIconColor: rclone.rcRunning ? barForeground : Qt.darker(barForeground, 1.55)
   // Any inline form owns the keyboard while open — otherwise r/c/a would be
   // swallowed as panel shortcuts while typing a mount path.
@@ -63,6 +65,9 @@ Panel {
   // Up/down moves between sections (and between remote rows), left/right moves
   // within the current row, Enter activates. Sections that are not on screen are
   // not in the order, so the cursor can never land somewhere invisible.
+  // ---- Keyboard cursor ------------------------------------------------------
+  // Everything below is state plus arithmetic, which is why panel-test can drive
+  // it over IPC — nav/activate/cursor exercise exactly these functions.
   function sectionOrder() {
     var order = []
     if (rclone.rcRunning) order.push("bandwidth")
@@ -235,6 +240,7 @@ Panel {
 
   // Starting a provider: Drive needs the console walk-through, everything else
   // rclone can drive itself.
+  // ---- Adding a remote ------------------------------------------------------
   function startProvider(provider) {
     if (!provider) return
     // A seeded backend needs one answer BEFORE rclone will start, so the grid
@@ -314,6 +320,7 @@ Panel {
     if (go && action) action()
   }
 
+  // ---- Actions that ask first -----------------------------------------------
   // Unmounting is safe once nothing is queued, so the question is only asked
   // when there is genuinely something to lose.
   function requestUnmount(mountPoint, pending) {
@@ -416,6 +423,7 @@ Panel {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
+  // ---- The tree -------------------------------------------------------------
   Service {
     id: rclone
     settings: root.settings

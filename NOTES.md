@@ -218,13 +218,11 @@ nothing on disk — its `config/dump` lists the remote, the file and the CLI do 
 Existence checks must read the config FILE, or a user who retries a failed setup is
 told the name already exists with nothing to resume.
 
-**15. The status line is a ROW, so showing one resizes the panel.** Reporting a
-transient note for a fast action made the whole list jump down and back within a
-second — an unmount finishes long before anyone can read "Unmounting…". Transient
-messages are therefore held back ~700ms (`Service.statusLine`, not `actionStatus`)
-and anything finishing inside that says nothing at all; the row leaving the list is
-the feedback. Errors are never delayed — they persist, so they cannot flicker.
-Bind new status text to `statusLine`.
+**15. A message must never resize the panel.** The status area is a fixed-height
+slot in the REMOTES header precisely for that reason: as its own row in the column
+it pushed the whole list down and let it spring back on every message. Bind new
+status text to `statusLine` (never `actionStatus`), and do not clear `actionStatus`
+from a runner — the timer owns the lifetime. Detail in *What the panel renders*.
 
 **16. `busy` must not include background reads.** It once included the status poll
 (every 2s, ~230ms) and the probe (a network round-trip PER REMOTE, started on its
@@ -268,10 +266,7 @@ successful poll, and a poll lands 1.2s after any action, so a failed mount was
 erased about a second after appearing. `errorMinMs` keeps it up for 8s.
 
 The automatic probe (panel open, and after a config edit) stays silent —
-`probe(false)`. It starts on its own, so it is noise wherever it is drawn. Announcing them grew the
-panel by a row and finishing shrank it, and because the message is delayed ~700ms
-it only appeared when the action happened to be slow — which made the jump look
-random. The row appearing or leaving the list is better feedback than the word.
+`probe(false)`. It starts on its own, so it is noise wherever it is drawn.
 
 `omarchy-shell <id> buttonState` prints every input to those buttons in one call,
 because with each IPC round trip costing ~250ms you cannot sample four properties
@@ -341,6 +336,13 @@ replace this with a fixed glyph table** — rclone has 69 backends and Nerd Font
 brand icons for a handful, so every such table maps `box`, `s3`, `pcloud` and
 `zoho` to the same default cloud, which is worse than vague. Marks are drawn with
 `Shape`/`ShapePath` (the house pattern) so they inherit the theme colour.
+
+**Never show an fs to a person.** An fs carries options and comes back from rclone
+hashed — `gdrive,skip_gdocs=true:` and `gdrive{YRXYK}:` are the same remote — so
+`Mounting gdrive,skip_gdocs=true:…` showed the user a connection string including
+the internal spelling of their own toggle. `Model.remoteNameFromFs()` cuts at the
+first `:`, `,` or `{`. Job rows are the exception and keep the path (`copy
+gdrive:docs → ~/Documents`), because there the path is the thing being copied.
 
 **RECENT rows** name their provider (`107 B · gdrive`) — a name, not an icon,
 because rows are one line and a name reads without a legend. Two constraints if you

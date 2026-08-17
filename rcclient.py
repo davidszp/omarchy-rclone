@@ -49,9 +49,8 @@ ENV_FILE = Path.home() / ".config" / "rclone" / "rcd.env"
 #
 # A TCP address in rcd.env still works; installs made before this keep running
 # until setup-daemon.sh migrates them.
-DEFAULT_SOCKET = "unix://%s/rclone-rcd.sock" % (
+DEFAULT_ADDR = "unix://%s/rclone-rcd.sock" % (
     os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid())
-DEFAULT_ADDR = DEFAULT_SOCKET
 DEFAULT_TIMEOUT = 4
 
 

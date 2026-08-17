@@ -45,24 +45,16 @@ step "manifest" omarchy plugin validate .
 # is the only thing that catches it — see test/glyph-coverage.py for why one
 # font is enough when Omarchy offers five.
 step "glyph coverage" python3 ./test/glyph-coverage.py
+# Three languages and no compiler between them, so a Model export, a Service
+# property or a helper can lose its last caller silently. Two constants had
+# already gone stale that way.
+step "dead code" python3 ./test/dead-code.py
 # Add -> mount -> remove, against a real rclone and a throwaway daemon in a
 # temporary HOME. The zombie-remote bug lived in the seams between rclone, the
 # daemon and our bookkeeping, where no unit test could reach it.
 step "remote lifecycle" ./test/remote-lifecycle-test.sh
 # Drives the LIVE widget over IPC; skips cleanly when no shell is running.
 step "panel behaviour" ./test/panel-test.sh
-
-# Every .qml file must be referenced by another file or be an entry point;
-# an orphan is dead weight that still ships.
-echo
-entry=$(python3 -c 'import json;print(json.load(open("manifest.json"))["entryPoints"]["barWidget"])')
-for f in *.qml; do
-  base="${f%.qml}"
-  [ "$f" = "$entry" ] && continue
-  if ! grep -q "\b$base\b" $(ls *.qml | grep -v "^$f$") 2>/dev/null; then
-    echo "  WARN unreferenced component: $f"
-  fi
-done
 
 echo
 if [ "$fails" -eq 0 ]; then
