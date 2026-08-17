@@ -70,6 +70,31 @@ Item {
 
   property bool probing: false
   property string actionStatus: ""
+
+  // What the panel's status line should show — "" for nothing, and a message the
+  // user has no time to read counts as nothing.
+  //
+  // The status line is a ROW in the panel's column, so showing one grows the panel
+  // and clearing it shrinks it back. Unmounting finishes in well under a second,
+  // so "Unmounting…" appeared and vanished and the whole list visibly jumped down
+  // and up again. Transient notes are therefore held back briefly: anything that
+  // finishes inside the delay says nothing at all, which is right — the row
+  // leaving the list is the feedback.
+  //
+  // Errors are never delayed. They persist rather than flicker, and they are the
+  // case where the user actually needs the words.
+  readonly property string statusLine:
+    lastError !== "" && actionStatus === "" ? lastError
+      : (_actionStatusDue ? actionStatus : "")
+
+  property bool _actionStatusDue: false
+
+  // Catches the direct `actionStatus = ""` assignments in the runners too, not
+  // just the ones that go through report().
+  onActionStatusChanged: if (actionStatus === "") {
+    _actionStatusDue = false
+    actionStatusDelay.stop()
+  }
   property string lastError: ""
 
   // Model functions read plain properties, and a QML object exposes exactly
@@ -200,9 +225,14 @@ Item {
     if (isError) {
       lastError = message
       actionStatus = message
+      // Straight to visible: an error is not a flicker risk and is worth a jump.
+      _actionStatusDue = true
+      actionStatusDelay.stop()
     } else {
       actionStatus = message
       if (message !== "") lastError = ""
+      _actionStatusDue = false
+      if (message !== "") actionStatusDelay.restart()
     }
     actionStatusTimer.restart()
   }
@@ -714,6 +744,15 @@ Item {
     id: actionStatusTimer
     interval: 2600
     onTriggered: root.actionStatus = ""
+  }
+
+  // Long enough that a mount, unmount or pin never shows a word — those finish in
+  // a few hundred ms — and short enough that anything genuinely slow still
+  // explains itself.
+  Timer {
+    id: actionStatusDelay
+    interval: 700
+    onTriggered: root._actionStatusDue = true
   }
 
   // ---- Runners -------------------------------------------------------------

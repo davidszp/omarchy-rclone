@@ -33,6 +33,11 @@ IpcHandler {
 
   // ---- Reading state ---------------------------------------------------------
   function status(): string { return ipc.service.statusText }
+
+  // The panel's status line, which is NOT statusText: transient notes are held
+  // back ~700ms so a fast action cannot flash a row in and out. Exposed to make
+  // that timing observable — it is otherwise only visible as a flicker.
+  function statusLine(): string { return ipc.service.statusLine }
   function refresh(): string { ipc.service.refresh(); return "ok" }
   function probe(): string { ipc.service.probe(); return "ok" }
 

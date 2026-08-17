@@ -241,8 +241,8 @@ Column {
 
   Text {
     width: parent.width
-    visible: wizard.service && wizard.service.actionStatus !== ""
-    text: wizard.service ? wizard.service.actionStatus : ""
+    visible: wizard.service && wizard.service.statusLine !== ""
+    text: wizard.service ? wizard.service.statusLine : ""
     color: wizard.ui ? wizard.ui.dim : Color.foreground
     font.family: wizard.ui ? wizard.ui.fontFamily : Style.font.family
     font.pixelSize: Style.font.caption

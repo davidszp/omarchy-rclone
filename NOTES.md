@@ -202,7 +202,15 @@ nothing on disk — its `config/dump` lists the remote, the file and the CLI do 
 Existence checks must read the config FILE, or a user who retries a failed setup is
 told the name already exists with nothing to resume.
 
-**15. Emphasis is weight, never colour.** `PanelTheme.urgent` resolves to
+**15. The status line is a ROW, so showing one resizes the panel.** Reporting a
+transient note for a fast action made the whole list jump down and back within a
+second — an unmount finishes long before anyone can read "Unmounting…". Transient
+messages are therefore held back ~700ms (`Service.statusLine`, not `actionStatus`)
+and anything finishing inside that says nothing at all; the row leaving the list is
+the feedback. Errors are never delayed — they persist, so they cannot flicker.
+Bind new status text to `statusLine`.
+
+**16. Emphasis is weight, never colour.** `PanelTheme.urgent` resolves to
 `foreground` on purpose: the theme's real urgent colour is red in dark themes and
 plain foreground in light ones, so the same warning shouted at half the users and
 whispered to the rest. An urgent line sits at full foreground where its neighbours

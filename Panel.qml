@@ -661,9 +661,9 @@ Panel {
           }
 
           Text {
-            visible: rclone.actionStatus !== "" || rclone.lastError !== ""
+            visible: rclone.statusLine !== ""
             width: parent.width
-            text: rclone.actionStatus !== "" ? rclone.actionStatus : rclone.lastError
+            text: rclone.statusLine
             color: rclone.lastError !== "" && rclone.actionStatus === "" ? theme.urgent : theme.dim
             font.family: theme.fontFamily
             font.pixelSize: Style.font.bodySmall
