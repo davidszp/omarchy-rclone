@@ -61,6 +61,12 @@ IpcHandler {
   function setup(): string { ipc.panel.open(); ipc.panel.setupOpen = true; return "ok" }
   function setupOpened(): bool { return ipc.panel.setupOpen }
 
+  // Whether the Drive wizard is holding a client id or secret. Exposed because
+  // it decides whether reopening the panel keeps your work — the panel closes on
+  // every focus loss, and that setup sends you to Google's console twice — and
+  // because there is otherwise no way to test that from outside.
+  function setupDirty(): bool { return ipc.panel.setupWizardDirty }
+
   // Which backend's extra question is showing, or "" for none. Some providers
   // need a value before rclone will start (zoho's region), and that step is
   // otherwise invisible to a script: no flow exists yet, so flowAsks() still

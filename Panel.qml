@@ -22,6 +22,8 @@ Panel {
   property int actionIndex: 0
   property bool cursorActive: false
   property bool setupOpen: false
+  // Readable by PanelIpc; the wizard itself lives deep in the layout.
+  readonly property bool setupWizardDirty: setupWizard.dirty
   // Remote name whose inline "mount as…" form is open; "" means none.
   property string mountPromptFor: ""
   // Remote name whose inline copy/mirror form is open; "" means none.
@@ -391,9 +393,16 @@ Panel {
     focusSection = sectionOrder()[0]
     remoteIndex = 0
     actionIndex = 0
-    // Always open on the main view. setup() re-arms the wizard AFTER calling
-    // open(), so the IPC entry point still lands where it should.
-    closeForms()
+    // Always open on the main view — EXCEPT when the wizard is holding input.
+    // The panel closes whenever it loses focus, and the Drive setup needs you to
+    // go to Google's console for the client id and again for the secret, so
+    // resetting on reopen threw away what you had already pasted. Worse, a
+    // Google client secret is shown exactly once, so "just paste it again" can
+    // mean going back for a NEW secret.
+    //
+    // setup() re-arms the wizard AFTER calling open(), so the IPC entry point
+    // still lands where it should.
+    if (!(setupOpen && setupWizard.dirty)) closeForms()
     rclone.refresh()
     // Opening the panel is the natural moment to notice a dead grant. Rate
     // limited to 10 minutes because each probe is one network round-trip per
@@ -420,6 +429,12 @@ Panel {
     target: rclone
     function onRemoteCreated(name) {
       root.open()
+      // The credentials are safely in rclone.conf now, so drop this copy of
+      // them: the fields are only hidden when the wizard closes, and a client
+      // secret has no business sitting in a text field for the rest of the
+      // session. Cleared HERE and not on submit — until the remote actually
+      // exists, those values are still the only copy the user has.
+      setupWizard.clearCredentials()
       root.setupOpen = false
       root.mountPromptFor = String(name)
       panelFlick.contentY = 0

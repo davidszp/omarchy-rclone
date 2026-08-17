@@ -24,6 +24,12 @@ Column {
 
   signal submitted(string name, string clientId, string clientSecret)
 
+  // Anything typed that would be painful to lose. The NAME does not count: it
+  // is prefilled, so counting it would make the form permanently "dirty".
+  // A Google client secret is shown once and never again, so re-entering it is
+  // not a minor annoyance — it means going back to the console for a new one.
+  readonly property bool dirty: idField.text.trim() !== "" || secretField.text.trim() !== ""
+
   readonly property bool complete: nameField.text.trim() !== ""
     && idField.text.trim() !== "" && secretField.text.trim() !== ""
     && !nameCollides

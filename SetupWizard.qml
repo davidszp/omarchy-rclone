@@ -19,6 +19,11 @@ Column {
 
   signal done()
 
+  // True once the user has entered a client id or secret.
+  readonly property bool dirty: credentials.dirty
+
+  function clearCredentials() { credentials.reset() }
+
   spacing: Style.space(10)
 
   // ---- Header -------------------------------------------------------------
@@ -221,6 +226,7 @@ Column {
 
   // ---- Credentials ---------------------------------------------------------
   CredentialsForm {
+    id: credentials
     width: parent.width
     ui: wizard.ui
     suggestedName: wizard.service
