@@ -110,10 +110,15 @@ $IPC flowAsks | cancel                     # what a flow is asking, and abort it
 
 ## Gotchas — do not re-derive these
 
-**1. Every rc call is itself a job.** `job/list` grows one entry per poll forever,
-and `runningIds` always contains the `job/list` call in flight — measured, an idle
-daemon reports `runningIds: [5]`. `status.py` reports `max(0, len(runningIds) - 1)`;
-the honest activity signal is `stats.transferring`, not any job count.
+**1. Every rc call is itself a job,** so `job/list` grows one entry per poll
+forever and `runningIds` always holds the `job/list` call in flight — an idle
+daemon reports `runningIds: [5]`. Subtracting that one call is not enough either:
+ANY hung rc call sits in `runningIds`, and two `operations/about` probes stuck
+dialling an unroutable host had the bar claiming "2 jobs running" for hours while
+the JOBS list was empty. **The count is now the list** — `len(payload["jobs"])`,
+which `job_rows` filters to our own copy/mirror/bisync groups. A number the panel
+cannot explain is worse than none. `stats.transferring` remains the honest activity
+signal.
 
 **2. `core/stats` is cumulative for the daemon's lifetime, not per job.** A
 progress bar on the global `bytes / totalBytes` drifts wrong the longer it runs.

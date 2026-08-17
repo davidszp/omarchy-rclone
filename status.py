@@ -7,8 +7,8 @@ know how rclone is reached.
 
 Two cost tiers, deliberately separated:
 
-  fast (default)  local config read + `rclone rc` calls against the local rcd.
-                  Cheap enough for a 2s poll while transfers are running.
+  fast (default)  local config read + rc calls to the local rcd, over HTTP on a
+                  unix socket (see rcclient). Cheap enough for a 2s poll.
   --probe         adds one `operations/about` network round-trip PER REMOTE.
                   Seconds, not milliseconds. Never call this on a timer.
 
@@ -687,21 +687,29 @@ def main():
     if mounts is not None:
         payload["mounts"] = pending_uploads(client, mount_rows(mounts, read_mount_fs()))
 
-    # GOTCHA: every rc call is itself a job, so `jobids` accumulates one entry
-    # per poll forever and `runningIds` always contains the job/list call we are
-    # making right now. Verified on an idle daemon: 4 finished ids and
-    # runningIds=[5] with nothing whatsoever happening. Count only OTHER running
-    # jobs, and never use this as the activity signal — stats.transferring is
-    # the honest one.
+    # GOTCHA: every rc call is itself a job, so `jobids` accumulates one entry per
+    # poll forever and `runningIds` always contains the job/list call being made
+    # right now. Verified on an idle daemon: 4 finished ids and runningIds=[5]
+    # with nothing whatsoever happening.
+    #
+    # `len(runningIds) - 1` was not enough. ANY rc call that hangs stays in
+    # runningIds, so the bar claimed "2 jobs running" — for hours — over two
+    # `operations/about` probes stuck dialling an unroutable host, while the JOBS
+    # list was empty because job_rows keeps only our own copy/mirror/bisync
+    # groups. A count the panel cannot explain and the user cannot act on is
+    # worse than no count.
+    #
+    # So the number IS the list: count what job_rows returns, which is exactly
+    # the work this plugin started. stats.transferring stays the honest activity
+    # signal for the bar.
     jobs = client.rc("job/list")
     if jobs is not None:
         running = [int(j) for j in (jobs.get("runningIds") or []) if str(j).isdigit()]
-        payload["runningJobs"] = max(0, len(running) - 1)
-        # Only pay for per-job stats when something is actually running. The
-        # `- 1` above is our own in-flight job/list call; job_rows filters by
-        # group prefix, so rc-call jobs drop out there too.
-        if payload["runningJobs"] > 0:
+        # Cheap guard: with nothing but our own job/list in flight there is
+        # nothing to ask about, and job_rows costs one rc call per running id.
+        if len(running) > 1:
             payload["jobs"] = job_rows(client, running)
+        payload["runningJobs"] = len(payload["jobs"])
 
     if probe:
         payload["probes"] = probe_remotes(client, payload["remotes"])
