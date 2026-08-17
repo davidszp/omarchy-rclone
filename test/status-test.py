@@ -404,6 +404,19 @@ remotes, _ = status.classify_config(
 eq(sorted(remotes[0]), ["incomplete", "name", "type"],
    "only name/type/incomplete reach the shell")
 
+# ---- the job group prefix is shared with rclone-rc -------------------------
+# Two files in two languages have to agree on this literal or the panel silently
+# shows no jobs and "stop everything" stops nothing. Read rclone-rc rather than
+# trusting a comment.
+plugin_dir = Path(__file__).resolve().parent.parent
+shell_prefix = ""
+for line in (plugin_dir / "rclone-rc").read_text().splitlines():
+    if line.startswith("JOB_GROUP_PREFIX="):
+        shell_prefix = line.split("=", 1)[1].strip().strip('"').strip("'")
+eq(shell_prefix, status.JOB_GROUP_PREFIX,
+   "rclone-rc and status.py agree on JOB_GROUP_PREFIX")
+eq(shell_prefix != "", True, "the prefix was actually found in rclone-rc")
+
 # ---- job_rows --------------------------------------------------------------
 # Reads per-group stats, and must ignore the jobs our own rc calls create.
 class FakeClient:

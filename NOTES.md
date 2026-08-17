@@ -115,10 +115,21 @@ forever and `runningIds` always holds the `job/list` call in flight — an idle
 daemon reports `runningIds: [5]`. Subtracting that one call is not enough either:
 ANY hung rc call sits in `runningIds`, and two `operations/about` probes stuck
 dialling an unroutable host had the bar claiming "2 jobs running" for hours while
-the JOBS list was empty. **The count is now the list** — `len(payload["jobs"])`,
-which `job_rows` filters to our own copy/mirror/bisync groups. A number the panel
-cannot explain is worse than none. `stats.transferring` remains the honest activity
-signal.
+the JOBS list was empty. **The count is now the list** — `len(payload["jobs"])`. A number the
+panel cannot explain is worse than none, and `stats.transferring` remains the
+honest activity signal.
+
+**How "ours" is decided:** `rclone-rc` labels every job it starts
+`omarchy-rclone/<verb> <src> -> <dst>`, and the reader filters on that prefix. The
+prefix is the identity; the rest is the display label, which `job_rows` strips so
+nothing downstream knows about it. The filter used to be
+`startswith(("copy ", "mirror ", "bisync "))`, which made the **verb** the
+identity — add one and two filters in two languages silently stop matching it, and
+any other tool's job labelled `copy …` counted as ours. The literal lives in both
+`rclone-rc` and `status.py`; `test/status-test.py` reads the shell file and asserts
+they agree, because a typo there shows no jobs and stops nothing. `stop-all` also
+still matches the legacy verb forms, deliberately: a transfer started before an
+upgrade is still running, and not stopping it would be worse than matching widely.
 
 **2. `core/stats` is cumulative for the daemon's lifetime, not per job.** A
 progress bar on the global `bytes / totalBytes` drifts wrong the longer it runs.

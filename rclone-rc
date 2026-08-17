@@ -44,6 +44,16 @@ FORCE="${5:-}"
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Marks a job as STARTED BY THIS PLUGIN. Every rc call is itself a job, so the
+# panel has to tell our transfers from the daemon's own bookkeeping — and the
+# filter used to be "does the group start with copy/mirror/bisync", which made the
+# VERB the identity. That fails twice: add a verb and two filters silently stop
+# matching it, and anyone else's job labelled "copy …" counts as ours.
+#
+# The prefix is the identity, the rest is the human label. Keep this in step with
+# JOB_GROUP_PREFIX in status.py — test/status-test.py asserts the two agree.
+JOB_GROUP_PREFIX="omarchy-rclone/"
+
 ENV_FILE="$HOME/.config/rclone/rcd.env"
 [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE — run the plugin's daemon setup first" >&2; exit 1; }
 # Sourced for RCLONE_RC_ADDR, which several messages quote. The credentials in
@@ -378,7 +388,8 @@ PY2
   bisync)
     [ -n "$FS" ] || { echo "bisync needs path1" >&2; exit 1; }
     wait_for_daemon
-    args=(path1="$FS" path2="$MOUNTPOINT" _async=true "_group=bisync $FS -> $MOUNTPOINT")
+    args=(path1="$FS" path2="$MOUNTPOINT" _async=true \
+          "_group=${JOB_GROUP_PREFIX}bisync $FS -> $MOUNTPOINT")
     # First run for a pair MUST be seeded, or rclone aborts. Seeding is not a
     # no-op: it merges both sides and establishes the baseline listings.
     case "$EXTRA" in *resync*) args+=(resync=true) ;; esac
@@ -394,7 +405,8 @@ PY2
     # counters, which are cumulative for the whole rcd lifetime.
     method="sync/copy"
     [ "$ACTION" = "mirror" ] && method="sync/sync"
-    args=(srcFs="$FS" dstFs="$MOUNTPOINT" _async=true "_group=$ACTION $FS -> $MOUNTPOINT")
+    args=(srcFs="$FS" dstFs="$MOUNTPOINT" _async=true \
+          "_group=${JOB_GROUP_PREFIX}$ACTION $FS -> $MOUNTPOINT")
     # A dry run reports what would happen and moves nothing. The only safe way
     # to preview a mirror before it deletes anything.
     [ "$EXTRA" = "dry" ] && args+=(_config='{"DryRun":true}')
@@ -502,8 +514,13 @@ except Exception: pass' || true); do
         | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("group") or "")
 except Exception: print("")' || true)"
+      # The legacy verb forms are still matched here, and only here: a transfer
+      # started before this plugin was upgraded is still running in the daemon,
+      # and leaving it going after the user pressed "stop everything" would be
+      # worse than the wider match. Drop them once no pre-upgrade daemon can be
+      # alive — they cannot be started any more.
       case "$group" in
-        copy\ *|mirror\ *|bisync\ *)
+        "$JOB_GROUP_PREFIX"*|copy\ *|mirror\ *|bisync\ *)
           rc job/stop jobid="$job_id" >/dev/null 2>&1 && stopped=$((stopped + 1)) ;;
       esac
     done

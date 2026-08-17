@@ -59,6 +59,21 @@ TIMEOUT_PROBE = 15
 # remote's config block is dropped on the floor.
 SAFE_CONFIG_KEYS = ("type",)
 
+# Marks a job as one THIS PLUGIN started. Set by rclone-rc; keep the two literals
+# in step — test/status-test.py asserts they match.
+#
+# The prefix is the identity and everything after it is the human label. The old
+# filter asked "does the group start with copy/mirror/bisync", which made the VERB
+# the identity: adding one meant editing two filters in two languages, and any
+# other tool's job labelled "copy …" counted as ours.
+JOB_GROUP_PREFIX = "omarchy-rclone/"
+
+# Groups from before the prefix existed. Read-only tolerance: a transfer started
+# by an older rclone-rc is still running in the daemon, and dropping it from the
+# panel mid-flight would hide real work. Nothing writes these any more, so this
+# can go once no pre-upgrade daemon can still be alive.
+LEGACY_JOB_GROUPS = ("copy ", "mirror ", "bisync ")
+
 # Backends that are fully usable with nothing but a `type`. For every other
 # backend a section holding only `type` is a setup that was abandoned before it
 # asked for a single credential.
@@ -388,13 +403,17 @@ def job_rows(client, running_ids):
         if status_payload is None:
             continue
         group = str(status_payload.get("group", ""))
-        if not group.startswith(("copy ", "mirror ", "bisync ")):
+        if not group.startswith((JOB_GROUP_PREFIX,) + LEGACY_JOB_GROUPS):
             continue  # not one of ours; rc calls themselves are jobs too
         stats = client.rc("core/stats", {"group": group}) or {}
         rows.append({
             "id": job_id,
+            # `group` stays whole — it is the key core/stats is asked for. Only
+            # the LABEL is stripped, so nothing downstream has to know the prefix
+            # and jobTitle() keeps parsing "<verb> <src> -> <dst>" as before.
             "group": group,
-            "label": group,
+            "label": group[len(JOB_GROUP_PREFIX):]
+                     if group.startswith(JOB_GROUP_PREFIX) else group,
             "bytes": int(stats.get("bytes") or 0),
             "totalBytes": int(stats.get("totalBytes") or 0),
             "speed": float(stats.get("speed") or 0),

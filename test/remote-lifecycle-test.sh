@@ -250,6 +250,41 @@ eq "$(rclone config dump | python3 -c 'import json,sys;print(json.load(sys.stdin
    "local" "and the existing remote is untouched"
 rclone config delete precious >/dev/null 2>&1
 
+echo "  -- only the plugin's own jobs are reported"
+# The writer (rclone-rc) and the reader (status.py job_rows) have to agree on the
+# group prefix, in two languages. status-test.py asserts the literals match; this
+# asserts the round trip through a real daemon, which is the part a typo survives.
+mkdir -p "$WORK/dest"
+copy_out="$("$PLUGIN_DIR/rclone-rc" copy "disk:$WORK/data" "$WORK/dest" 2>&1)"
+jobid="$(printf '%s' "$copy_out" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("jobid", ""))
+except Exception: print("")')"
+eq "$([ -n "$jobid" ] && echo yes || echo no)" "yes" "the copy returns a jobid"
+eq "$(rc job/status jobid="$jobid" | python3 -c 'import json,sys
+print(json.load(sys.stdin).get("group","").startswith("omarchy-rclone/"))')"    "True" "the daemon records the job under our namespace"
+
+# What the panel would show for it. A foreign job — every rc call is one, grouped
+# `job/<n>` — must not appear here.
+rows="$(PLUGIN_DIR="$PLUGIN_DIR" JOBID="$jobid" python3 - <<'PY2'
+import json, os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.environ["PLUGIN_DIR"])
+import status, rcclient
+env = rcclient.read_env()
+client = status.Rclone("rclone", env)
+ids = (client.rc("job/list") or {}).get("jobids") or []
+rows = status.job_rows(client, ids)
+print(json.dumps([{"label": r["label"], "group": r["group"]} for r in rows]))
+PY2
+)"
+eq "$(printf '%s' "$rows" | python3 -c 'import json,sys
+rows=json.load(sys.stdin)
+print(all(not r["label"].startswith("omarchy-rclone/") for r in rows))')"    "True" "the label has the namespace stripped, so the panel never shows it"
+eq "$(printf '%s' "$rows" | python3 -c 'import json,sys
+rows=json.load(sys.stdin)
+print(all(r["group"].startswith("omarchy-rclone/") for r in rows))')"    "True" "and every reported job is one of ours — no rc-call jobs leak in"
+"$PLUGIN_DIR/rclone-rc" stop-all >/dev/null 2>&1
+
 echo "  -- reaping never touches a real remote"
 rclone config create keeper local >/dev/null 2>&1
 printf '\n[ghost]\ntoken = {"access_token":"y"}\n' >> "$RCLONE_CONFIG"
