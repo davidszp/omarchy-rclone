@@ -97,6 +97,14 @@ Item {
   }
   property string lastError: ""
 
+  // When the current error was raised. A successful poll clears the error — right,
+  // because a daemon that has come back should not keep showing that it was down —
+  // but a poll lands 1.2s after any action, so a failed mount was wiped about a
+  // second after it appeared. Small dim text near the top of the panel for one
+  // second is not a message; it is a flicker. Errors now get a floor.
+  property double _errorAtMs: 0
+  readonly property int errorMinMs: 8000
+
   // Model functions read plain properties, and a QML object exposes exactly
   // those, so `root` can be passed straight in — no intermediate copy.
   readonly property bool active: Model.isActive(root)
@@ -169,11 +177,21 @@ Item {
 
   // Expensive: one network round-trip PER REMOTE. Only ever from an explicit
   // user action, never from a timer.
-  function probe() {
+  // `announce` false for a probe the user did not ask for. The status line is a
+  // row in the panel's column — the same pattern the first-party Dropbox and
+  // Tailscale panels use — so a message pushes the whole list down and lets it
+  // spring back. Worth it for something the user just clicked; not worth it for
+  // work that starts on its own the moment the panel opens.
+  //
+  // The probe button being disabled (`probing`) and each row's own result are the
+  // feedback for the automatic case.
+  function probe(announce) {
     if (!rcRunning || remotes.length === 0) return
     if (!probeRunner.start(["python3", pluginDir + "status.py", "--probe"])) return
     probing = true
-    report("Checking " + remotes.length + (remotes.length === 1 ? " remote…" : " remotes…"), false)
+    if (announce !== false) {
+      report("Checking " + remotes.length + (remotes.length === 1 ? " remote…" : " remotes…"), false)
+    }
   }
 
   // rclone.conf's mtime at the last poll. 0 means "not seen yet".
@@ -242,7 +260,9 @@ Item {
     // A fast poll carries no probe results; keeping the previous ones stops the
     // remote list flickering back to "unknown" every couple of seconds.
     if (parsed.probed === true) { probes = parsed.probes; _lastProbeMs = Date.now() }
-    lastError = ""
+    // Only once it has been readable. Anything still on screen inside the floor
+    // stays; the poll after that clears it.
+    if (lastError !== "" && Date.now() - _errorAtMs > errorMinMs) lastError = ""
     _noteConfigChange(Number(parsed.configMtime || 0))
     configResidue = parsed.configResidue
     _reapResidue(parsed.configResidue)
@@ -256,6 +276,7 @@ Item {
   function report(message, isError) {
     if (isError) {
       lastError = message
+      _errorAtMs = Date.now()
       actionStatus = message
       // Straight to visible: an error is not a flicker risk and is worth a jump.
       _actionStatusDue = true
@@ -317,7 +338,7 @@ Item {
     var now = Date.now()
     if (_lastProbeMs !== 0 && (now - _lastProbeMs) < maxAgeMs) return
     _lastProbeMs = now
-    probe()
+    probe(false)   // automatic: says nothing
   }
 
   property double _lastProbeMs: 0
@@ -804,7 +825,11 @@ Item {
     onSucceeded: function(output) { root.applyStatus(output); root._settling = false }
     // Cleared here too: a helper that fails must not leave the panel permanently
     // disabled waiting for a state that will never arrive.
-    onFailed: function(message) { root._settling = false; root.lastError = message }
+    onFailed: function(message) {
+      root._settling = false
+      root.lastError = message
+      root._errorAtMs = Date.now()
+    }
   }
 
   CommandRunner {
@@ -888,7 +913,7 @@ Item {
     // Deliberately silent on success: this fires on its own after any config
     // edit, and a toast for routine bookkeeping the user never asked for is
     // noise. A probe result changing from broken to working is the feedback.
-    onSucceeded: function() { root.probe() }
+    onSucceeded: function() { root.probe(false) }
     onFailed: function(message) { root.report(message, true) }
   }
 

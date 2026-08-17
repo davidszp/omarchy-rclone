@@ -243,6 +243,18 @@ an action until the next poll lands, and **the order in `statusRunner.onSucceede
 matters** — apply the payload first, clear the flag second, or bindings re-evaluate
 against stale state and the blink comes back from the fix itself.
 
+**The status row is the house pattern, and it shifts the layout.** A `visible:`
+toggled Text inside the column — the first-party Dropbox and Tailscale panels do
+exactly the same, so every Omarchy panel pushes its content down when it has
+something to say. Diverging (reserving the row, or floating it) would make this
+panel behave unlike the rest of the desktop, so instead **only work the user asked
+for is allowed to speak**: `probe(false)` for the automatic probe on panel open and
+after a config edit, and nothing at all for mount/unmount. Errors always speak.
+
+Errors also get a floor: `applyStatus` used to clear `lastError` on every
+successful poll, and a poll lands 1.2s after any action, so a failed mount was
+erased about a second after appearing. `errorMinMs` keeps it up for 8s.
+
 Mount and unmount also **say nothing** in the status line. Announcing them grew the
 panel by a row and finishing shrank it, and because the message is delayed ~700ms
 it only appeared when the action happened to be slow — which made the jump look

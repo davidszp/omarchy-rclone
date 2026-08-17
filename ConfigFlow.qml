@@ -116,6 +116,24 @@ Item {
       name = ""
       return
     }
+    // A REFUSAL is `ok: false` with `done: true` — that is how the helper reports
+    // "couldn't find backend for type …" or "remote x already exists". It is not a
+    // finished setup, and announcing "Connected" for it claims a remote that does
+    // not exist while discarding the one sentence explaining why. The Drive path
+    // had the same hole; a JSON protocol means a completed RUN is not a success.
+    if (parsed.ok === false) {
+      var refused = name
+      _clear()
+      reported(String(parsed.error || "Setup failed"), true)
+      // Same cleanup as the failure path: a refused start can still have written
+      // a partial remote before rclone objected.
+      if (refused !== "") {
+        cleanupRunner.start([flow.pluginDir + "rclone-config", "abort", refused])
+      }
+      refreshNeeded()
+      return
+    }
+
     // Done ONLY when there is no state left. rclone returns intermediate steps
     // with a State but no Option, and treating those as finished is what
     // silently truncated OneDrive setup after the browser sign-in.
