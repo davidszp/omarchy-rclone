@@ -549,6 +549,7 @@ Panel {
           backendLabel: root.formBackend ? String(root.formBackend.label) : ""
           suggestedName: root.formBackend
             ? Model.suggestRemoteName(String(root.formBackend.type), rclone.remotes) : ""
+          existingNames: rclone.allRemoteNames
           busy: rclone.backendSchemaLoading || rclone.flowBusy
           onCancelled: {
             root.formBackend = null

@@ -13,13 +13,27 @@ Column {
 
   property QtObject ui: null
 
+  // A name that is FREE, not a fixed "gdrive". Connecting a second Drive
+  // account with the name of the first would run `config create` over it and
+  // discard its token; rclone-config refuses that, and this keeps the user from
+  // meeting the refusal in the first place.
+  property string suggestedName: "gdrive"
+  // See BackendForm: `config create` replaces a remote of the same name, so a
+  // second Drive account named like the first would silently cost you the first.
+  property var existingNames: []
+
   signal submitted(string name, string clientId, string clientSecret)
 
   readonly property bool complete: nameField.text.trim() !== ""
     && idField.text.trim() !== "" && secretField.text.trim() !== ""
+    && !nameCollides
+
+  // Exact match only — rclone remote names are case-sensitive.
+  readonly property bool nameCollides:
+    (existingNames || []).indexOf(nameField.text.trim()) !== -1
 
   function reset() {
-    nameField.text = "gdrive"
+    nameField.text = root.suggestedName
     idField.text = ""
     secretField.text = ""
   }
@@ -48,9 +62,16 @@ Column {
   TextField {
     id: nameField
     width: parent.width
-    text: "gdrive"
-    placeholderText: "gdrive"
+    text: root.suggestedName
+    placeholderText: root.suggestedName
     foreground: root.ui ? root.ui.foreground : Color.foreground
+  }
+
+  Note {
+    visible: root.nameCollides
+    text: "⚠ " + nameField.text.trim() + " already exists. Creating it again would "
+        + "replace it and lose its sign-in. Pick another name."
+    color: root.ui ? root.ui.urgent : Color.urgent
   }
 
   Note { text: "Client ID" ; opacity: 0.6 }

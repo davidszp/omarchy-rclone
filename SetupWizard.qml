@@ -223,6 +223,9 @@ Column {
   CredentialsForm {
     width: parent.width
     ui: wizard.ui
+    suggestedName: wizard.service
+      ? Model.suggestRemoteName("drive", wizard.service.remotes) : "gdrive"
+    existingNames: wizard.service ? wizard.service.allRemoteNames : []
     onSubmitted: function(name, clientId, clientSecret) {
       if (!wizard.service) return
       wizard.service.createDriveRemote(name, clientId, clientSecret)

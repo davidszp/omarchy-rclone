@@ -23,6 +23,19 @@ Item {
   property bool rcRunning: false
   property string rcError: ""
   property var remotes: []
+  // Config sections that are not remotes (see classify_config). Kept because
+  // `config create` collides with these too — they are section names in the same
+  // file — even though they are never shown as remotes.
+  property var configResidue: []
+
+  // Every name the config file holds. What the setup forms must refuse: creating
+  // over any of them replaces that section and loses whatever it held.
+  readonly property var allRemoteNames: {
+    var names = []
+    for (var i = 0; i < remotes.length; i++) names.push(String(remotes[i].name))
+    for (var j = 0; j < configResidue.length; j++) names.push(String(configResidue[j]))
+    return names
+  }
   property var mounts: []
   property var autoMounts: []
   property var stats: ({})
@@ -174,6 +187,7 @@ Item {
     if (parsed.probed === true) { probes = parsed.probes; _lastProbeMs = Date.now() }
     lastError = ""
     _noteConfigChange(Number(parsed.configMtime || 0))
+    configResidue = parsed.configResidue
     _reapResidue(parsed.configResidue)
     reconcileMounts()
   }

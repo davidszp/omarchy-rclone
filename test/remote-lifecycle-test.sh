@@ -232,6 +232,21 @@ eq "$(printf '{"parameters":{}}' | "$PLUGIN_DIR/rclone-config" start retryme sft
    "True" "a remote that really exists is still protected"
 rclone config delete retryme >/dev/null 2>&1
 
+echo "  -- setup never overwrites an existing remote"
+# `config create` REPLACES a remote of the same name, discarding its token
+# without asking. The Drive wizard pre-fills a name, so connecting a second
+# account of the same provider is exactly when this bites. Both entry points
+# must refuse, because both reach config/create.
+rclone config create precious local >/dev/null 2>&1
+for verb in start connect; do
+  refused="$(printf '{"parameters":{}}' | "$PLUGIN_DIR/rclone-config" $verb precious local \
+    | python3 -c 'import json,sys;print("already exists" in (json.load(sys.stdin).get("error") or ""))')"
+  eq "$refused" "True" "$verb refuses a name that is already taken"
+done
+eq "$(rclone config dump | python3 -c 'import json,sys;print(json.load(sys.stdin)["precious"]["type"])')" \
+   "local" "and the existing remote is untouched"
+rclone config delete precious >/dev/null 2>&1
+
 echo "  -- reaping never touches a real remote"
 rclone config create keeper local >/dev/null 2>&1
 printf '\n[ghost]\ntoken = {"access_token":"y"}\n' >> "$RCLONE_CONFIG"

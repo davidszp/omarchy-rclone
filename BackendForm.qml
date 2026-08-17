@@ -22,6 +22,10 @@ Column {
   property string backendType: ""
   property string backendLabel: ""
   property string suggestedName: ""
+  // Names already in the config. `config create` REPLACES a remote of the same
+  // name — discarding its token and settings without asking — so a collision
+  // has to be refused before it is submitted, not diagnosed afterwards.
+  property var existingNames: []
   property bool busy: false
 
   // Answers so far, keyed by option name. A plain object rather than per-field
@@ -74,8 +78,13 @@ Column {
     for (var i = 0; i < requiredFields.length; i++) {
       if (valueFor(requiredFields[i]).trim() === "") return false
     }
-    return nameField.text.trim() !== ""
+    return nameField.text.trim() !== "" && !nameCollides
   }
+
+  // Exact match only: rclone remote names are case-sensitive, so `Box` and `box`
+  // really are two different remotes and refusing the second would be wrong.
+  readonly property bool nameCollides:
+    (existingNames || []).indexOf(nameField.text.trim()) !== -1
 
   function submit() {
     if (!complete) return
@@ -135,6 +144,17 @@ Column {
       text: root.suggestedName
       placeholderText: root.backendType
       foreground: root.ui ? root.ui.foreground : Color.foreground
+    }
+
+    Text {
+      visible: root.nameCollides
+      width: parent.width
+      wrapMode: Text.WordWrap
+      text: "⚠ " + nameField.text.trim() + " already exists. Creating it again "
+          + "would replace it and lose its sign-in. Pick another name."
+      color: root.ui ? root.ui.urgent : Color.urgent
+      font.family: root.ui ? root.ui.fontFamily : Style.font.family
+      font.pixelSize: Style.font.caption
     }
   }
 

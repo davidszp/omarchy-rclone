@@ -253,6 +253,14 @@ def main(argv):
         if not backend:
             sys.stderr.write("connect needs a backend type\n")
             return 2
+        # Same guard as `start`, and it matters more here: the Drive wizard
+        # pre-fills a name, so connecting a SECOND Drive account without
+        # renaming would run `config create` over the first — which discards its
+        # token and unmounts nothing, leaving a remote that looks configured and
+        # cannot authenticate. Refusing costs one rename.
+        if name in existing_remote_names():
+            return fail("remote %s already exists — pick another name, or "
+                        "reconnect it from its own menu" % name)
         parameters = stdin_json().get("parameters") or {}
         payload, error = config_call(
             "config/create", name, backend=backend,
