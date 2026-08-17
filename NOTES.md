@@ -343,9 +343,45 @@ process holds the value. The marker reaches both the watcher and the request
 builder through the *environment*, so the test cannot trip over its own argv —
 verified to fail (`expected 0, got 2`) when pointed back at the old CLI form.
 
-Not in scope, and worth knowing: the daemon's own credentials come from
-`EnvironmentFile`, so they live in its environment, and `/proc/<pid>/environ` is
-readable only by the owner. `ExecStart` carries no secret.
+### The rest of the audit
+
+Everything below was measured while checking the fix, not assumed.
+
+**Three more channels, all closed:**
+
+- **A failed rc call echoes the request back.** The 500 body is
+  `{"error": …, "input": {"parameters": {"pass": "hunter2"}}, …}`, and an error
+  string ends up in the panel's status line. `rcclient.call` therefore reads
+  *only* the `error` field — never the raw body — and scrubs any value we sent
+  under a sensitive-looking key out of it, because rclone is free to quote the
+  offending value in its own wording.
+- **The form displayed secrets in clear text.** Masking used rclone's
+  `IsPassword`, which it does not set for `s3 secret_access_key`, `b2 key`,
+  `webdav bearer_token`, `sftp key_pem` or `drive client_secret` — all of which
+  report `Sensitive: true` instead. `provider_fields` now masks on either flag.
+  It deliberately does not also match on field NAME: that would hide `key_file`
+  and `pubkey_file`, which are paths the user needs to read back.
+- **The daemon's own credentials are fine.** They arrive by `EnvironmentFile`, so
+  they live in its environment, and `/proc/<pid>/environ` is owner-only, unlike
+  `cmdline`. `ExecStart` carries no secret, and the daemon's log records only the
+  error message, not the parameters (checked against the live journal).
+
+**One exposure that cannot be closed, and is not the panel's:** the IPC
+scripting surface takes its argument on a command line, so
+`omarchy-shell io.github.davidszp.omarchy-rclone answer <value>` puts that value
+in the argv of `omarchy-shell` and `qs ipc`. Typing into the panel does not go
+near a command line. Do not paste a credential into that IPC call — it exists for
+testing.
+
+**Where the remaining trust sits:** `rcclient` sends the password to whatever
+`RCLONE_RC_ADDR` in `rcd.env` names. That file is 0600 and written by
+`setup-daemon.sh`, and anything able to rewrite it could already read the
+password out of it, so this adds no exposure — but it does mean the address is
+not hardcoded, and a review that assumes loopback should check the file.
+
+Verified with the marketplace's own scanner (`scripts/security-baseline-scanner.mjs`
+run against the pushed commit): no findings, and the same four capabilities as
+before — this work added no new ones.
 
 ## Setup flow
 

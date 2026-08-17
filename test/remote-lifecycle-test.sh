@@ -209,6 +209,29 @@ eq "$(rclone config dump | python3 -c 'import json,sys;print(json.load(sys.stdin
    "True" "and it is obscured on disk, not stored as typed"
 rclone config delete argvtest >/dev/null 2>&1
 
+echo "  -- a failed setup does not block retrying the same name"
+# A `config/create` that FAILS leaves the half-built remote in the daemon's
+# in-memory config while writing nothing to disk — measured: the daemon's
+# config/dump lists it, the file and `rclone config dump` are empty. The
+# existence guard therefore has to read the FILE. Reading the daemon instead
+# answered "already exists — use resume" for a remote that does not exist,
+# leaving the user no way to retry a setup that failed.
+echo '{"parameters":{}}' | "$PLUGIN_DIR/rclone-config" start retryme no-such-backend >/dev/null 2>&1
+eq "$(rc config/dump | python3 -c 'import json,sys;print("retryme" in json.load(sys.stdin))')" \
+   "True" "the failed create leaves a phantom in the daemon"
+eq "$(sections)" "" "and nothing on disk"
+retry="$(printf '{"parameters":{"host":"h","user":"u"}}' | "$PLUGIN_DIR/rclone-config" start retryme sftp)"
+eq "$(printf '%s' "$retry" | python3 -c 'import json,sys;print(json.load(sys.stdin)["ok"])')" \
+   "True" "so the same name can still be used"
+eq "$(printf '%s' "$retry" | python3 -c 'import json,sys;print("already exists" in (json.load(sys.stdin).get("error") or ""))')" \
+   "False" "and it is not refused as already existing"
+# Now it IS on disk, so a second attempt must be refused — create would discard
+# the remote it already made.
+eq "$(printf '{"parameters":{}}' | "$PLUGIN_DIR/rclone-config" start retryme sftp \
+      | python3 -c 'import json,sys;print("already exists" in (json.load(sys.stdin).get("error") or ""))')" \
+   "True" "a remote that really exists is still protected"
+rclone config delete retryme >/dev/null 2>&1
+
 echo "  -- reaping never touches a real remote"
 rclone config create keeper local >/dev/null 2>&1
 printf '\n[ghost]\ntoken = {"access_token":"y"}\n' >> "$RCLONE_CONFIG"

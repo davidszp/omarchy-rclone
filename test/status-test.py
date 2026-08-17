@@ -282,6 +282,52 @@ eq(status.mount_rows({"mountPoints": ["nope"]}), [], "non-dict members are skipp
 eq(tuple(status.SAFE_CONFIG_KEYS), ("type",),
    "only 'type' is copied out of a remote's config block")
 
+# ---- provider_fields: what gets masked on screen ---------------------------
+# `IsPassword` alone is not enough. Measured against rclone 1.75: s3's
+# secret_access_key, b2's key, webdav's bearer_token and drive's client_secret
+# all report IsPassword false and Sensitive true, so masking on IsPassword left
+# every one of them rendering in clear text in the form.
+def _providers(options):
+    return {"providers": [{"Name": "test", "Options": options}]}
+
+
+def _field(name, **flags):
+    return dict({"Name": name, "Help": "h", "Advanced": False}, **flags)
+
+
+fields = status.provider_fields(_providers([
+    _field("pass", IsPassword=True),
+    _field("secret_access_key", Sensitive=True),
+    _field("both", IsPassword=True, Sensitive=True),
+    _field("key_file"),
+]), "test")["fields"]
+masked = {f["name"]: f["password"] for f in fields}
+eq(masked.get("pass"), True, "IsPassword is masked")
+eq(masked.get("secret_access_key"), True, "Sensitive is masked too — the S3 case")
+eq(masked.get("both"), True, "both flags together are masked")
+eq(masked.get("key_file"), False, "a plain path stays readable")
+
+# ---- rcclient: error text must not carry back what we sent -----------------
+# A failed rc call answers with the request echoed in full — measured:
+#   {"error": "couldn't find backend for type \"nope\"",
+#    "input": {"parameters": {"pass": "hunter2"}}, "status": 500}
+# Only `error` is ever read, but rclone may also quote the offending value
+# inside it, and an error string is shown in the panel.
+import rcclient  # noqa: E402
+
+eq(rcclient._scrub('invalid value "hunter2" for pass',
+                   {"parameters": {"pass": "hunter2"}}),
+   'invalid value "***" for pass', "a quoted secret is redacted")
+eq(rcclient._scrub("no such host h.example", {"parameters": {"host": "h.example"}}),
+   "no such host h.example", "a non-sensitive value is left readable")
+eq(rcclient._scrub("failed", {}), "failed", "no params, no change")
+eq(sorted(rcclient._sensitive_values(
+       {"parameters": {"pass": "p1", "token": "t1", "host": "h"},
+        "opt": {"client_secret": "s1"}})),
+   ["p1", "s1", "t1"], "sensitive values are found at any depth")
+eq(rcclient._scrub("value ab", {"parameters": {"pass": "ab"}}), "value ab",
+   "a very short value is not redacted — it would mangle unrelated text")
+
 # ---- classify_config -------------------------------------------------------
 # THE ZOMBIE-REMOTE REGRESSION. A section with no `type` used to be reported as
 # a half-finished remote, so the panel listed it, labelled it "setup never

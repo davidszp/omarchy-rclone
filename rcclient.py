@@ -64,6 +64,49 @@ def url_for(env):
     return addr if addr.startswith("http") else "http://%s/" % addr
 
 
+# Keys whose value must never appear in a message. Same list as rclone-config's,
+# and for the same reason: rclone does not reliably flag which fields are
+# sensitive, so match on the name and accept false positives.
+SENSITIVE_KEYS = ("pass", "secret", "token", "key", "password", "passwd")
+
+
+def _sensitive_values(params, found=None):
+    """Every value in `params` that sits under a sensitive-looking key."""
+    found = [] if found is None else found
+    if isinstance(params, dict):
+        for key, value in params.items():
+            if isinstance(value, (dict, list)):
+                _sensitive_values(value, found)
+            elif value not in (None, "") and any(
+                    word in str(key).lower() for word in SENSITIVE_KEYS):
+                found.append(str(value))
+    elif isinstance(params, list):
+        for value in params:
+            _sensitive_values(value, found)
+    return found
+
+
+def _scrub(message, params):
+    """Redact anything we sent that must not be shown.
+
+    Necessary because a FAILED rc call answers with the whole request echoed
+    back — measured:
+
+        {"error": "couldn't find backend for type \\"nope\\"",
+         "input": {"parameters": {"pass": "hunter2"}}, "status": 500}
+
+    Only the `error` field is ever read below, but rclone is free to quote an
+    offending value inside that field too, and an error string travels to the
+    panel's status line where it would be on screen (and in a screenshot). So
+    strip our own secrets out of it rather than trusting the wording.
+    """
+    text = str(message or "")
+    for value in _sensitive_values(params):
+        if len(value) > 2 and value in text:
+            text = text.replace(value, "***")
+    return text
+
+
 def call(method, params=None, timeout=DEFAULT_TIMEOUT, env=None):
     """Call one rc method. Returns (payload, error); payload is None on failure.
 
@@ -90,11 +133,20 @@ def call(method, params=None, timeout=DEFAULT_TIMEOUT, env=None):
         # rclone answers a failed method with 500 and a JSON body carrying the
         # real message; without reading it every failure reads as "HTTP Error
         # 500", which says nothing about what went wrong.
+        #
+        # ONLY the `error` field, and NEVER the raw body: the body also contains
+        # `input`, which is the request echoed back verbatim — passwords and all.
         detail = exc.read().decode("utf-8", "replace")
+        message = ""
         try:
-            return None, str(json.loads(detail).get("error") or detail)[:200]
-        except (ValueError, AttributeError):
-            return None, (detail or str(exc))[:200]
+            parsed = json.loads(detail)
+            if isinstance(parsed, dict):
+                message = str(parsed.get("error") or "")
+        except ValueError:
+            message = ""
+        if not message:
+            message = "rc call %s failed (HTTP %s)" % (method, exc.code)
+        return None, _scrub(message, params)[:200]
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
         # Same sentence the old CLI path produced, so the panel's handling of

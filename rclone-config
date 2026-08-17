@@ -146,6 +146,36 @@ def stdin_json():
     return value if isinstance(value, dict) else {}
 
 
+def existing_remote_names():
+    """Remote names in the config FILE — deliberately not the daemon's view.
+
+    A `config/create` that fails leaves the half-built remote in the daemon's
+    IN-MEMORY config while never writing it to disk: measured, after a create
+    with a bad backend type the daemon's `config/dump` lists it and both the file
+    and `rclone config dump` are empty. Asking the daemon would therefore refuse
+    a legitimate retry of the same name — "already exists — use resume" — with
+    nothing on disk to resume, which is a dead end for the user.
+
+    Only the section NAMES are read, so no token or password is loaded.
+
+    Falls back to the daemon's view rather than to "nothing exists": a false
+    refusal costs the user a different name, while a false permit would let
+    `config create` silently discard a working remote's token.
+    """
+    paths, error = rcclient.call("config/paths", {})
+    path = (paths or {}).get("config") if not error else None
+    if path:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                return {line.strip()[1:-1].strip()
+                        for line in handle
+                        if line.strip().startswith("[") and line.strip().endswith("]")}
+        except OSError:
+            pass
+    dump, error = rcclient.call("config/dump", {})
+    return set(dump) if not error and isinstance(dump, dict) else set()
+
+
 def config_call(method, name, parameters=None, opt=None, backend=None):
     """One step of the machine. `backend` is only meaningful for config/create,
     where rclone takes the type beside the name rather than inside `opt`."""
@@ -195,8 +225,7 @@ def main(argv):
         # silently discards its token and every other setting — so starting a
         # flow on a name that already exists is destructive. Callers pick a free
         # name with Model.suggestRemoteName(); repairing one is `resume`.
-        existing, error = rcclient.call("config/dump", {})
-        if not error and isinstance(existing, dict) and name in existing:
+        if name in existing_remote_names():
             return fail("remote %s already exists — use resume to reconfigure it" % name)
         # Seeds: values the flow never asks for but the backend refuses to start
         # without (zoho stops at "Error: no region set"). On stdin with

@@ -516,7 +516,23 @@ def provider_fields(payload, backend):
                 # panel has one caption's worth of room.
                 "help": str(option.get("Help", "")).strip().split("\n")[0],
                 "required": option.get("Required") is True,
-                "password": option.get("IsPassword") is True,
+                # `IsPassword` alone is NOT enough to decide what to mask on
+                # screen. Measured against rclone 1.75's own provider table:
+                #
+                #   s3     secret_access_key   IsPassword False  Sensitive True
+                #   b2     key                 IsPassword False  Sensitive True
+                #   webdav bearer_token        IsPassword False  Sensitive True
+                #   sftp   key_pem             IsPassword False  Sensitive True
+                #   drive  client_secret       IsPassword False  Sensitive True
+                #
+                # so every one of those rendered in clear text in the form.
+                # `IsPassword` marks fields rclone will obscure in the config
+                # file; `Sensitive` marks fields it will not print. Masking needs
+                # both. Not falling back to the field NAME here, unlike the
+                # step-by-step flow: it would also hide `key_file` and
+                # `pubkey_file`, which are paths the user needs to read back.
+                "password": (option.get("IsPassword") is True
+                             or option.get("Sensitive") is True),
                 "default": "" if default in (None, False) else str(default),
                 "boolean": isinstance(default, bool),
                 "examples": examples,
